@@ -78,8 +78,12 @@ impl Db {
         Ok(row)
     }
 
-    /// Expose the pool for stores in this crate.
-    pub(crate) fn pool(&self) -> &PgPool {
+    /// Escape-hatch access to the underlying pool.
+    ///
+    /// Intended for integration tests, migrations tooling and the API
+    /// layer's health checks. Application logic should prefer typed
+    /// store methods so tenant scoping stays auditable.
+    pub fn pool(&self) -> &sqlx::PgPool {
         &self.pool
     }
 

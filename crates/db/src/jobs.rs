@@ -170,6 +170,24 @@ impl Db {
         Ok(res.rows_affected())
     }
 
+    /// Renew a held lease (worker heartbeat).
+    ///
+    /// Only succeeds while the caller still owns a running job;
+    /// false means ownership was lost (expired and reclaimed).
+    pub async fn renew_job_lease(&self, id: JobId, owner: &str, ttl_secs: i64) -> Result<bool> {
+        let res = sqlx::query(
+            "UPDATE jobs SET lease_expires_at = now() + make_interval(secs => $3)
+             WHERE id=$1 AND lease_owner=$2 AND status='running'",
+        )
+        .bind(id.as_uuid())
+        .bind(owner)
+        .bind(ttl_secs as f64)
+        .execute(self.pool())
+        .await
+        .map_err(crate::map_sqlx)?;
+        Ok(res.rows_affected() == 1)
+    }
+
     /// Fetch a dead-lettered job for inspection.
     pub async fn get_dead_job(&self, id: JobId) -> Result<(Json, Option<String>)> {
         sqlx::query_as::<_, (Json, Option<String>)>(

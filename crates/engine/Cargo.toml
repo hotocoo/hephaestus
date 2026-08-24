@@ -1,0 +1,27 @@
+[package]
+name = "hephaestus-engine"
+description = "Workflow orchestration and durable worker execution"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+hephaestus-core = { path = "../core" }
+hephaestus-db = { path = "../db" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+sqlx = { workspace = true }
+
+[lints]
+workspace = true
