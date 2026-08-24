@@ -573,6 +573,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hephaestus-verify"
+version = "0.1.0"
+dependencies = [
+ "hephaestus-core",
+ "hephaestus-tools",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
 name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
