@@ -22,3 +22,19 @@ until the 1.0 API contract freezes per ADR-011.
   audit log with hash-chain verifier.
 - Project governance docs: SECURITY.md, CONTRIBUTING.md, Code of
   Conduct, CI workflows, issue/PR templates.
+- Repository intelligence: safe git operations via argument vectors,
+  tracked-file inventory with language classification, deterministic
+  AST-based symbol extraction behind per-language extractors.
+- Centralized tool runtime: builtin tool registry, deny-by-default
+  capability sets with workspace containment and command allowlists,
+  sandboxed argv-vector shell execution, audited invocation entry.
+- Layered deterministic verification engine: ordered verification
+  plans executed through the governed tool runtime; no successful
+  state without every required layer passing.
+- Agent runtime: declarative role manifests with policy invariants
+  (reviewer read-only, verifier cannot mutate sources, least
+  privilege enforced at validation), OpenAI-compatible model provider
+  with bounded retries, and a governed session loop where every tool
+  call is authorized by the runtime, audited through pluggable sinks,
+  budget-bounded, and re-framed as untrusted data before reaching the
+  model again.

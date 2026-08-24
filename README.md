@@ -34,6 +34,13 @@ Currently working end-to-end:
 * Layered validated configuration (defaults -> TOML file ->
   environment) that fails closed, including production-only checks
 * Secret redaction and untrusted-content framing primitives
+* Centralized tool runtime: deny-by-default capabilities, workspace
+  containment, command allowlists, sandboxed shell, audited invocation
+* Layered deterministic verification executed through the tool runtime
+* Agent runtime: role manifests with policy-enforced separation of
+  duties (reviewers read-only by invariant), OpenAI-compatible model
+  providers with bounded retries, and a governed session loop where
+  model output can select tools but never widen permissions
 
 ## Architecture (in progress)
 
