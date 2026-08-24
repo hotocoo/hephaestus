@@ -33,6 +33,8 @@ uuid = { version = "1", features = ["v7", "v4", "serde"] }
 # hashing
 sha2 = "0.10"
 hex = "0.4"
+walkdir = "2"
+wait-timeout = "0.2"
 
 # database
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "derive"] }
