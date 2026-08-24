@@ -48,6 +48,8 @@ pub trait JobHandler: Send + Sync {
 #[derive(Default)]
 pub struct HandlerRegistry {
     analyze: Option<Arc<dyn JobHandler>>,
+    extract_requirements: Option<Arc<dyn JobHandler>>,
+    generate_plan: Option<Arc<dyn JobHandler>>,
 }
 
 impl HandlerRegistry {
@@ -62,10 +64,26 @@ impl HandlerRegistry {
         self
     }
 
+    /// Register the requirement-extraction handler.
+    pub fn with_extract_requirements(mut self, h: Arc<dyn JobHandler>) -> Self {
+        self.extract_requirements = Some(h);
+        self
+    }
+
+    /// Register the plan-generation handler.
+    pub fn with_generate_plan(mut self, h: Arc<dyn JobHandler>) -> Self {
+        self.generate_plan = Some(h);
+        self
+    }
+
     fn route(&self, payload: &JobPayload) -> Option<Arc<dyn JobHandler>> {
         match payload {
             JobPayload::AnalyzeRepository { .. } => self.analyze.clone(),
-            // Later phases register planning/implementation/... here.
+            JobPayload::ExtractRequirements { .. } => self.extract_requirements.clone(),
+            JobPayload::GeneratePlan { .. } => self.generate_plan.clone(),
+            // Implementation/verification/build handlers land with
+            // their phases; route misses fail the job permanently so
+            // unregistered kinds are visible to operators.
             _ => None,
         }
     }
@@ -90,7 +108,7 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             id: format!("worker-{}", Uuid::now_v7().simple()),
-            queues: vec!["analysis".into()],
+            queues: vec!["analysis".into(), "planning".into()],
             lease_ttl_secs: 300,
             poll_interval: Duration::from_millis(500),
             concurrency: 4,

@@ -180,6 +180,44 @@ impl Db {
         .map_err(crate::map_sqlx)?;
         Ok(())
     }
+
+    /// Resolve the tenant scope and current state of a run.
+    ///
+    /// Job payloads carry only ids; workers are trusted infrastructure
+    /// and may look up scope by run id alone. Unknown runs fail loudly.
+    pub async fn run_scope(&self, id: WorkflowRunId) -> Result<RunScope> {
+        let row: (Uuid, Uuid, String) = sqlx::query_as(
+            "SELECT organization_id, task_id, state FROM workflow_runs WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(self.pool())
+        .await
+        .map_err(crate::map_sqlx)?
+        .ok_or(Error::NotFound {
+            entity: "workflow_run",
+        })?;
+
+        let state = WorkflowState::from_name(&row.2).ok_or_else(|| Error::Validation {
+            field: "state".into(),
+            message: format!("unknown persisted workflow state {:?}", row.2),
+        })?;
+        Ok(RunScope {
+            organization_id: OrganizationId::from_uuid(row.0),
+            task_id: TaskId::from_uuid(row.1),
+            state,
+        })
+    }
+}
+
+/// Tenant scope plus current state of one workflow run.
+#[derive(Debug, Clone)]
+pub struct RunScope {
+    /// Tenant owning the run.
+    pub organization_id: OrganizationId,
+    /// Task driving the run.
+    pub task_id: TaskId,
+    /// Current machine state.
+    pub state: WorkflowState,
 }
 
 fn trigger_name(t: TransitionEvent) -> &'static str {

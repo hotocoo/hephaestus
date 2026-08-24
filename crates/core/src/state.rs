@@ -171,6 +171,14 @@ impl WorkflowState {
             WorkflowState::Cancelled => "cancelled",
         }
     }
+
+    /// Parse the persisted state name back into the enum.
+    ///
+    /// Workers read `state` columns and must reject unknown names
+    /// loudly instead of guessing; there is no default state.
+    pub fn from_name(raw: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|s| s.name() == raw)
+    }
 }
 
 /// Trigger events that drive the state machine.

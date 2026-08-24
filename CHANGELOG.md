@@ -38,3 +38,14 @@ until the 1.0 API contract freezes per ADR-011.
   call is authorized by the runtime, audited through pluggable sinks,
   budget-bounded, and re-framed as untrusted data before reaching the
   model again.
+- Planning pipeline: repository snapshot via hardened git plus
+  deterministic inventory analysis, requirement extraction and plan
+  generation driven by governed planner sessions whose final answers
+  are strict JSON documents parsed deterministically (malformed
+  output retries within queue budgets, never guessed at);
+  transactional requirements replacement and plan persistence with
+  automatic supersession of prior plans; an approval gate that opens
+  atomically with the generated plan and parks the workflow run at
+  `awaiting_approval`. Handler-level failure classification maps
+  transient problems to bounded retries and configuration or data
+  problems to permanent failure.

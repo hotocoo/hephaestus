@@ -14,6 +14,7 @@ pub mod audit;
 pub mod events;
 pub mod intake;
 pub mod jobs;
+pub mod planning;
 pub mod store;
 pub mod tasks;
 pub mod workflow;

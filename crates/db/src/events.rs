@@ -5,7 +5,7 @@ use hephaestus_core::event::{AggregateKind, EventEnvelope, EventPayload, Provena
 use hephaestus_core::{Error, Result};
 use uuid::Uuid;
 
-use hephaestus_core::id::{HephaestusId, OrganizationId};
+use hephaestus_core::id::{HephaestusId, OrganizationId, TaskId};
 
 use crate::store::Db;
 
@@ -32,6 +32,40 @@ impl Db {
         .bind(provenance_name(env.provenance))
         .bind(payload)
         .bind(env.occurred_at)
+        .execute(self.pool())
+        .await
+        .map_err(crate::map_sqlx)?;
+        Ok(())
+    }
+
+    /// Append a task-scoped event whose payload is already in envelope
+    /// wire shape, borrowing the given run's correlation id.
+    ///
+    /// Workers use this for deterministic stage summaries (e.g.
+    /// repository analysis) that must stay correlated with their run
+    /// without constructing a full typed envelope at the call site.
+    pub async fn append_task_event_for_run(
+        &self,
+        org: OrganizationId,
+        task: TaskId,
+        run: hephaestus_core::id::WorkflowRunId,
+        provenance: &str,
+        payload: serde_json::Value,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO events
+               (id, schema_version, organization_id, aggregate, aggregate_id,
+                correlation_id, provenance, payload)
+             SELECT $1, $2, $3, 'task', $4, correlation_id, $5, $6
+             FROM workflow_runs WHERE id = $7",
+        )
+        .bind(Uuid::now_v7())
+        .bind(1i32)
+        .bind(org.as_uuid())
+        .bind(task.as_uuid())
+        .bind(provenance)
+        .bind(payload)
+        .bind(run.as_uuid())
         .execute(self.pool())
         .await
         .map_err(crate::map_sqlx)?;

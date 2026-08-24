@@ -41,6 +41,12 @@ Currently working end-to-end:
   duties (reviewers read-only by invariant), OpenAI-compatible model
   providers with bounded retries, and a governed session loop where
   model output can select tools but never widen permissions
+* Planning pipeline: repository snapshot + deterministic inventory
+  analysis, requirement extraction and plan generation driven by
+  governed planner sessions (strict JSON documents, parsed
+  deterministically, retried within queue budgets when malformed),
+  transactional requirements/plan persistence, and a human approval
+  gate that parks the run at `awaiting_approval`
 
 ## Architecture (in progress)
 
