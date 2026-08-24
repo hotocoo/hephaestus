@@ -2,16 +2,14 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::PathBuf;
-
 use hephaestus_core::Error;
 use hephaestus_tools::capabilities::{CapabilitySet, ToolCapability};
 use hephaestus_verify::{Layer, LayerSpec, VerificationPlan, run_plan};
 
-fn caps(dir: &PathBuf, cmds: &[&str]) -> CapabilitySet {
+fn caps(dir: &std::path::Path, cmds: &[&str]) -> CapabilitySet {
     let mut c = CapabilitySet::default()
         .with(ToolCapability::ShellExec)
-        .with_workspace(dir.clone());
+        .with_workspace(dir.to_path_buf());
     for n in cmds {
         c = c.with_command(*n);
     }
@@ -36,7 +34,7 @@ fn plan_validation_rejects_bad_specs() {
 #[test]
 fn all_passing_plan_reports_success() {
     let dir = tempfile::tempdir().expect("tmp");
-    let c = caps(&dir.path().to_path_buf(), &["echo"]);
+    let c = caps(dir.path(), &["echo"]);
     let plan = VerificationPlan::new(vec![
         LayerSpec::new(Layer::Format, "echo", &["fmt-ok"]),
         LayerSpec::new(Layer::Lint, "echo", &["lint-ok"]),
@@ -53,7 +51,7 @@ fn all_passing_plan_reports_success() {
 #[test]
 fn fail_fast_stops_at_first_failure() {
     let dir = tempfile::tempdir().expect("tmp");
-    let c = caps(&dir.path().to_path_buf(), &["false", "echo"]);
+    let c = caps(dir.path(), &["false", "echo"]);
     let plan = VerificationPlan::new(vec![
         LayerSpec::new(Layer::UnitTests, "echo", &["tests pass here"]),
         LayerSpec::new(Layer::Security, "false", &[]),
@@ -71,7 +69,7 @@ fn fail_fast_stops_at_first_failure() {
 #[test]
 fn continue_on_failure_records_all_layers() {
     let dir = tempfile::tempdir().expect("tmp");
-    let c = caps(&dir.path().to_path_buf(), &["false", "echo"]);
+    let c = caps(dir.path(), &["false", "echo"]);
     let plan = VerificationPlan::new(vec![
         LayerSpec::new(Layer::TypeCheck, "false", &[]),
         LayerSpec::new(Layer::Build, "echo", &["built anyway"]),
@@ -87,7 +85,7 @@ fn continue_on_failure_records_all_layers() {
 #[test]
 fn unallowlisted_layer_is_a_recorded_failure_not_a_panic() {
     let dir = tempfile::tempdir().expect("tmp");
-    let c = caps(&dir.path().to_path_buf(), &["echo"]);
+    let c = caps(dir.path(), &["echo"]);
     let plan =
         VerificationPlan::new(vec![LayerSpec::new(Layer::Build, "make", &[])]).expect("plan");
     let report = run_plan(&plan, &c, false);
