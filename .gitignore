@@ -1,0 +1,37 @@
+# Rust
+/target/
+**/*.rs.bk
+cargo-timing*.html
+
+# Node / web
+node_modules/
+dist/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Environment & secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Databases / local state
+*.db
+*.sqlite
+/data/
+/.forge/
+
+# Python fixtures
+__pycache__/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage / profiling
+*.profraw
+lcov.info

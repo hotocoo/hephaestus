@@ -1,0 +1,2 @@
+# Forge clippy configuration
+# Lints are enforced in CI; do not weaken them to make CI pass.
