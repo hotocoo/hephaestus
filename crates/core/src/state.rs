@@ -256,6 +256,8 @@ pub fn transition_table() -> Vec<(WorkflowState, TransitionEvent, WorkflowState)
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
     use std::collections::{HashMap, HashSet};
 

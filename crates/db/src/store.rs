@@ -74,7 +74,7 @@ impl Db {
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| crate::map_sqlx(e))?;
+        .map_err(crate::map_sqlx)?;
         Ok(row)
     }
 
@@ -88,14 +88,15 @@ impl Db {
         self.pool
             .execute(sqlx::query("SELECT 1"))
             .await
-            .map_err(|e| crate::map_sqlx(e))?;
+            .map_err(crate::map_sqlx)?;
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use crate::testutil::test_db;
 
     #[tokio::test(flavor = "multi_thread")]

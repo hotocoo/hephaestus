@@ -208,6 +208,8 @@ fn trigger_name(t: TransitionEvent) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
     use crate::tasks::NewTask;
     use crate::testutil::test_db;

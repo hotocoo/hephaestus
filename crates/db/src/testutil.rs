@@ -6,6 +6,7 @@
 //! so CI cannot degrade into testing nothing.
 
 #![allow(dead_code)]
+#![allow(clippy::panic)]
 
 use std::sync::Once;
 

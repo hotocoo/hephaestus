@@ -116,6 +116,8 @@ impl Error {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
 
     #[test]
@@ -132,10 +134,7 @@ mod tests {
 
     #[test]
     fn storage_error_does_not_leak_source_in_display() {
-        let inner = std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "postgres://user:hunter2@db.internal/prod",
-        );
+        let inner = std::io::Error::other("postgres://user:hunter2@db.internal/prod");
         let e = Error::Storage(Box::new(inner));
         let rendered = e.to_string();
         assert!(

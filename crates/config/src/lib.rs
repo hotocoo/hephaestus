@@ -283,10 +283,10 @@ impl Config {
                 self.database.max_connections = v;
             }
         }
-        if let Some(storage) = f.storage {
-            if let Some(v) = storage.root {
-                self.storage.root = PathBuf::from(v);
-            }
+        if let Some(storage) = f.storage
+            && let Some(v) = storage.root
+        {
+            self.storage.root = PathBuf::from(v);
         }
         if let Some(t) = f.telemetry {
             if let Some(v) = t.log_level {
@@ -342,10 +342,10 @@ impl Config {
         if let Some(v) = env("HEPHAESTUS_STORAGE_ROOT") {
             self.storage.root = PathBuf::from(v);
         }
-        if let Some(v) = env("HEPHAESTUS_OTLP_ENDPOINT") {
-            if !v.is_empty() {
-                self.telemetry.otlp_endpoint = Some(v);
-            }
+        if let Some(v) = env("HEPHAESTUS_OTLP_ENDPOINT")
+            && !v.is_empty()
+        {
+            self.telemetry.otlp_endpoint = Some(v);
         }
         if let Some(v) = env("HEPHAESTUS_LOG_LEVEL") {
             self.telemetry.log_level = v;
@@ -394,7 +394,7 @@ impl Config {
                     "sandbox network egress is forbidden in production by default policy".into(),
                 ));
             }
-            if parsed.host_str().map_or(true, |h| h == "localhost") {
+            if parsed.host_str().is_none_or(|h| h == "localhost") {
                 return Err(hephaestus_core::Error::Config(
                     "production database must not point at localhost".into(),
                 ));
@@ -486,6 +486,8 @@ struct FileAuth {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
 
     fn no_env(_: &str) -> Option<String> {
@@ -553,9 +555,13 @@ mod tests {
 
     #[test]
     fn production_rejects_auth_disabled_and_local_db() {
-        let mut cfg = Config::default();
-        cfg.environment = Environment::Production;
-        let err = cfg.validate().unwrap_err();
+        let cfg = Config {
+            environment: Environment::Production,
+            ..Default::default()
+        };
+        let Err(err) = cfg.validate() else {
+            panic!("production validation must fail for default config");
+        };
         assert!(err.to_string().contains("production"), "got: {err}");
     }
 

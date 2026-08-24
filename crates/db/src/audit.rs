@@ -20,6 +20,19 @@ pub struct AuditEntry<'a> {
     pub detail: serde_json::Value,
 }
 
+/// A materialized audit chain row used by the verifier.
+#[derive(Debug, sqlx::FromRow)]
+struct AuditRow {
+    id: i64,
+    prev_hash: String,
+    hash: String,
+    actor: String,
+    action: String,
+    target_type: String,
+    target_id: Option<String>,
+    detail: serde_json::Value,
+}
+
 impl Db {
     /// Record an audit entry, chained onto the previous entry's hash.
     ///
@@ -66,16 +79,7 @@ impl Db {
     /// Returns Ok(true) when every link matches; Err lists nothing -
     /// use returned boolean false plus logs for investigation.
     pub async fn verify_audit_chain(&self) -> Result<bool> {
-        let rows: Vec<(
-            i64,
-            String,
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            serde_json::Value,
-        )> = sqlx::query_as(
+        let rows: Vec<AuditRow> = sqlx::query_as(
             "SELECT id, prev_hash, hash, actor, action, target_type, target_id, detail
                  FROM audit_log ORDER BY id ASC",
         )
@@ -84,7 +88,17 @@ impl Db {
         .map_err(crate::map_sqlx)?;
 
         let mut expected_prev = String::new();
-        for (id, prev_hash, hash, actor, action, target_type, target_id, detail) in rows {
+        for AuditRow {
+            id,
+            prev_hash,
+            hash,
+            actor,
+            action,
+            target_type,
+            target_id,
+            detail,
+        } in rows
+        {
             if prev_hash != expected_prev {
                 tracing::warn!(audit_id = id, "audit chain broken at link");
                 return Ok(false);
@@ -116,6 +130,8 @@ impl Db {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
     use crate::testutil::test_db;
     use uuid::Uuid;
