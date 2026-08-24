@@ -1,0 +1,15 @@
+# Ownership for critical modules.
+# Security-sensitive areas require owner review.
+
+# Sandbox & execution isolation
+/crates/sandbox/ @hephaestus-eng/security-team
+
+# Policy engine & authorization
+/crates/policy/ @hephaestus-eng/security-team
+
+# Database migrations
+/migrations/ @hephaestus-eng/backend-team
+
+# Release infrastructure
+/.github/workflows/release.yml @hephaestus-eng/release-team
+/infra/ @hephaestus-eng/platform-team
