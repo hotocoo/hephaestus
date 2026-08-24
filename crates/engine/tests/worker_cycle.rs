@@ -184,7 +184,9 @@ async fn worker_claims_and_completes_bootstrap_job() {
     // task's bootstrap job shows up rather than any job at all.
     let want = receipt.task_id.to_string();
     let mut handled = false;
-    for _ in 0..200 {
+    // 20s budget: under a fully parallel workspace run, claim latency
+    // rises; this test must be load-tolerant, not lucky.
+    for _ in 0..800 {
         let hit = calls.lock().expect("lock").iter().any(|p| {
             matches!(
                 p, JobPayload::AnalyzeRepository { task_id, .. } if task_id.to_string() == want

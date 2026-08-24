@@ -10,9 +10,12 @@
 //! the tamper-evident audit log.
 
 pub mod capabilities;
+pub mod fs_tools;
+pub mod invocation;
 pub mod registry;
 pub mod shell;
 
 pub use capabilities::{CapabilitySet, ToolCapability};
+pub use invocation::{AuthzDecision, Invocation};
 pub use registry::{ToolDefinition, ToolRegistry};
 pub use shell::SandboxedShell;
