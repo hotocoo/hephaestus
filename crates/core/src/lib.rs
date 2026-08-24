@@ -1,6 +1,6 @@
-//! # forge-core
+//! # hephaestus-core
 //!
-//! Foundational domain model for Forge: identifiers, timestamps,
+//! Foundational domain model for Hephaestus: identifiers, timestamps,
 //! error taxonomy, the workflow state machine, and the versioned
 //! internal event model.
 //!
@@ -23,9 +23,9 @@ pub mod injection;
 pub mod state;
 
 pub use error::{Error, Result};
-pub use id::ForgeId;
+pub use id::HephaestusId;
 
-/// Semantic version of the Forge core domain model.
+/// Semantic version of the Hephaestus core domain model.
 ///
 /// Bumped when event or state-machine schemas change
 /// incompatibly. See `docs/adr` for the compatibility policy.

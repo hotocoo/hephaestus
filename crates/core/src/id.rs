@@ -141,20 +141,20 @@ define_id!(
     UserId
 );
 
-/// A generic Forge identifier used where the concrete entity type is
+/// A generic Hephaestus identifier used where the concrete entity type is
 /// carried alongside (e.g. event envelopes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct ForgeId(pub Uuid);
+pub struct HephaestusId(pub Uuid);
 
-impl ForgeId {
+impl HephaestusId {
     /// Generate a fresh generic identifier.
     pub fn generate() -> Self {
         Self(Uuid::now_v7())
     }
 }
 
-impl fmt::Display for ForgeId {
+impl fmt::Display for HephaestusId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }

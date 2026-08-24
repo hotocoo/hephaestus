@@ -1,4 +1,4 @@
-//! Error taxonomy for Forge.
+//! Error taxonomy for Hephaestus.
 //!
 //! Errors are structured so that API layers can map them to stable
 //! public codes without exposing internals (stack traces, connection

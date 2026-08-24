@@ -1,6 +1,6 @@
 [package]
-name = "hephaestus-core"
-description = "Hephaestus domain model: ids, errors, workflow state machine, events"
+name = "hephaestus-db"
+description = "Persistence layer: pools, migrations, typed stores"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,14 +9,19 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-chrono = { workspace = true }
+hephaestus-core = { path = "../core" }
+
+sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
+chrono = { workspace = true }
 uuid = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

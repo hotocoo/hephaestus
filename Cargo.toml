@@ -9,8 +9,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
-repository = "https://github.com/forge-dev/forge"
-authors = ["Forge Developers"]
+repository = "https://github.com/hephaestus-eng/hephaestus"
+authors = ["Hephaestus Developers"]
 
 [workspace.dependencies]
 # async runtime
@@ -35,7 +35,7 @@ sha2 = "0.10"
 hex = "0.4"
 
 # database
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "derive"] }
 
 # http / api
 axum = { version = "0.8", features = ["http2", "json"] }

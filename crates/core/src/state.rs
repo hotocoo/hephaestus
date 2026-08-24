@@ -1,6 +1,6 @@
 //! The workflow state machine.
 //!
-//! Forge treats workflow state as an explicit finite state machine.
+//! Hephaestus treats workflow state as an explicit finite state machine.
 //! The set of legal transitions is a compile-time table; anything
 //! outside the table is rejected. There is no API to "set status"
 //! arbitrarily - state only changes through transition().

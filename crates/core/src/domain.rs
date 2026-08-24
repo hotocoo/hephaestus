@@ -1,7 +1,7 @@
 //! Core domain objects.
 //!
 //! These are the in-memory shapes shared by persistence, API and the
-//! engines. Persistence mapping lives in `forge-db`; wire mapping in
+//! engines. Persistence mapping lives in `hephaestus-db`; wire mapping in
 //! the API layer. This module owns validation rules that must hold
 //! everywhere (e.g. a requirement kind is never silently upgraded).
 
@@ -43,7 +43,7 @@ pub enum RiskLevel {
 
 /// Epistemic status of a statement about the task.
 ///
-/// Forge NEVER silently converts an Assumption into a Requirement:
+/// Hephaestus NEVER silently converts an Assumption into a Requirement:
 /// assumptions are surfaced to humans and tracked until resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
