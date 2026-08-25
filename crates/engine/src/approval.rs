@@ -56,18 +56,39 @@ pub enum ApprovalOutcome {
 /// Decides plan-approval gates and boots the execution pipeline.
 #[derive(Clone)]
 pub struct ApprovalService {
-    // Reserved for the replan chain and API wiring; the decision path
-    // itself only needs durable storage.
+    // Reserved for the replan chain; the decision path itself only
+    // needs durable storage. Workers populate both via [`Self::new`];
+    // decision-only surfaces such as the HTTP API construct the
+    // service through [`Self::gate_only`] because they deliberately
+    // hold no model-provider credentials.
     #[allow(dead_code)]
-    deps: SessionDeps,
+    deps: Option<SessionDeps>,
     #[allow(dead_code)]
-    layout: WorkspaceLayout,
+    layout: Option<WorkspaceLayout>,
 }
 
 impl ApprovalService {
     /// Bind dependencies and workspace layout.
     pub fn new(deps: SessionDeps, layout: WorkspaceLayout) -> Self {
-        Self { deps, layout }
+        Self {
+            deps: Some(deps),
+            layout: Some(layout),
+        }
+    }
+
+    /// Decision-only constructor for surfaces that record human gate
+    /// decisions without running governed sessions.
+    ///
+    /// `decide` touches only durable storage; model sessions enter the
+    /// pipeline later through queued jobs handled by workers. When
+    /// model-provider configuration reaches such a surface it can
+    /// switch to [`Self::new`] without any change to decision
+    /// semantics.
+    pub fn gate_only() -> Self {
+        Self {
+            deps: None,
+            layout: None,
+        }
     }
 
     /// Apply one decision to the run's open plan gate.

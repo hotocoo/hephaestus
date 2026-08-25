@@ -80,3 +80,13 @@ until the 1.0 API contract freezes per ADR-011.
   deployments fail the run terminally - honestly, with the successful
   build preserved as evidence - until a real deployment executor
   exists.
+- HTTP API layer (ADR-009): the `hephaestus-api` crate and
+  `hephaestus-server` binary exposing task intake (with idempotency
+  keys), tenant-scoped task/run/plan/gate/event reads, project and
+  repository catalog listings, and plan-approval / merge gate decisions
+  driven through ApprovalService and MergeService; pre-provisioned
+  bearer API keys bound per organization with redacted debug output and
+  fail-closed production validation, core-taxonomy error mapping with
+  stable public codes, liveness/readiness probes, body-size limits from
+  configuration, graceful shutdown, and database-backed integration
+  tests over authentication, tenant isolation and both gates.

@@ -1,0 +1,37 @@
+[package]
+name = "hephaestus-api"
+description = "HTTP API layer for Hephaestus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+hephaestus-core = { path = "../core" }
+hephaestus-config = { path = "../config" }
+hephaestus-db = { path = "../db" }
+hephaestus-engine = { path = "../engine" }
+
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[bin]]
+name = "hephaestus-server"
+path = "src/main.rs"
+
+[dev-dependencies]
+sqlx = { workspace = true }
+http-body-util = "0.1"
+
+[lints]
+workspace = true

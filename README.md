@@ -61,6 +61,16 @@ Currently working end-to-end:
   plans demand no deployment completing via `skip_deployment`, and
   demanded-but-impossible deployments failing loudly instead of being
   simulated
+* HTTP API layer (ADR-009): an axum-based control-plane surface in
+  `hephaestus-api` served by the `hephaestus-server` binary - task
+  intake with idempotency keys, tenant-scoped reads over tasks, runs,
+  plans, gates, events and the project/repository catalog, and human
+  plan-approval / merge decisions routed through the same services the
+  workers use. Requests authenticate via pre-provisioned bearer API
+  keys bound to one organization each (fail-closed configuration,
+  production demands at least one key), errors map onto the core
+  taxonomy with stable public codes, and every endpoint scopes its
+  store access by the authenticated principal's tenant
 
 ## Architecture (in progress)
 

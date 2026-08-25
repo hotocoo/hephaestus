@@ -13,9 +13,11 @@
 //!
 //! Secrets never appear in Debug output of this structure.
 
+use std::collections::HashSet;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
-use hephaestus_core::Result;
+use hephaestus_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// Top-level Hephaestus configuration.
@@ -206,6 +208,36 @@ impl Default for SandboxLimits {
     }
 }
 
+/// One pre-provisioned API key bound to a tenant.
+///
+/// Keys are created out-of-band and handed to operators; there is no
+/// token-issuance endpoint. Every request authenticated by a key is
+/// scoped to its organization and attributed to its principal.
+///
+/// The token is a bearer secret: it never appears in Debug output.
+/// `Serialize` output *does* contain it - serialized config must
+/// never be logged.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKey {
+    /// Bearer token presented as `Authorization: Bearer <token>`.
+    pub token: String,
+    /// Organization every request authenticated by this key is scoped to.
+    pub organization_id: uuid::Uuid,
+    /// Principal recorded on decisions made through this key.
+    pub principal: String,
+}
+
+impl fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ApiKey")
+            .field("token", &"[redacted]")
+            .field("organization_id", &self.organization_id)
+            .field("principal", &self.principal)
+            .finish()
+    }
+}
+
 /// Authentication settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -215,6 +247,10 @@ pub struct AuthConfig {
     pub disabled: bool,
     /// Bearer token lifetime in seconds.
     pub token_ttl_secs: u64,
+    /// Pre-provisioned API keys. Empty is valid only when auth is
+    /// disabled or the environment is development/test; production
+    /// validation demands at least one key otherwise.
+    pub keys: Vec<ApiKey>,
 }
 
 impl Default for AuthConfig {
@@ -222,6 +258,7 @@ impl Default for AuthConfig {
         Self {
             disabled: false,
             token_ttl_secs: 3600 * 12,
+            keys: Vec::new(),
         }
     }
 }
@@ -320,6 +357,17 @@ impl Config {
             if let Some(v) = a.token_ttl_secs {
                 self.auth.token_ttl_secs = v;
             }
+            // The file section defines the complete key set.
+            if let Some(keys) = a.keys {
+                self.auth.keys = keys
+                    .into_iter()
+                    .map(|k| ApiKey {
+                        token: k.token,
+                        organization_id: k.organization_id,
+                        principal: k.principal,
+                    })
+                    .collect();
+            }
         }
         if let Some(e) = f.environment {
             self.environment = e;
@@ -350,6 +398,9 @@ impl Config {
         if let Some(v) = env("HEPHAESTUS_LOG_LEVEL") {
             self.telemetry.log_level = v;
         }
+        if let Some(v) = env("HEPHAESTUS_AUTH_KEYS") {
+            self.auth.keys = parse_keys_env(&v);
+        }
     }
 
     /// Validate the assembled configuration. Fails closed.
@@ -372,6 +423,24 @@ impl Config {
             return Err(hephaestus_core::Error::Config(
                 "server.bind_addr must not be empty".into(),
             ));
+        }
+        // API keys must be attributable, non-trivial and unique; tokens
+        // double as bearer secrets so short values would be guessable.
+        let mut seen_tokens = HashSet::new();
+        for key in &self.auth.keys {
+            if key.token.trim().chars().count() < 16 {
+                return Err(Error::Config(
+                    "auth.keys token must be at least 16 characters".into(),
+                ));
+            }
+            if key.principal.trim().is_empty() {
+                return Err(Error::Config(
+                    "auth.keys principal must not be empty".into(),
+                ));
+            }
+            if !seen_tokens.insert(key.token.clone()) {
+                return Err(Error::Config("auth.keys contains duplicate tokens".into()));
+            }
         }
         matches!(
             self.telemetry.log_level.to_lowercase().as_str(),
@@ -399,6 +468,11 @@ impl Config {
                     "production database must not point at localhost".into(),
                 ));
             }
+            if self.auth.keys.is_empty() {
+                return Err(hephaestus_core::Error::Config(
+                    "production requires at least one auth.keys entry when auth is enabled".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -417,6 +491,32 @@ fn parse_environment(v: &str) -> Environment {
 fn parse_port(v: &str) -> u16 {
     v.parse()
         .unwrap_or_else(|_| fatal_config("HEPHAESTUS_PORT", v))
+}
+
+/// Parse the HEPHAESTUS_AUTH_KEYS environment override.
+///
+/// Format: semicolon-separated entries of comma-separated fields,
+/// `principal,organization_id,token`. Malformed input aborts before
+/// any state exists (fail closed), matching HEPHAESTUS_PORT behavior.
+fn parse_keys_env(raw: &str) -> Vec<ApiKey> {
+    raw.split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|entry| {
+            let fields: Vec<&str> = entry.split(',').map(str::trim).collect();
+            let [principal, org, token] = fields.as_slice() else {
+                fatal_config("HEPHAESTUS_AUTH_KEYS", entry);
+            };
+            let organization_id = org.parse::<uuid::Uuid>().unwrap_or_else(|_| {
+                fatal_config("HEPHAESTUS_AUTH_KEYS", entry);
+            });
+            ApiKey {
+                token: (*token).to_string(),
+                organization_id,
+                principal: (*principal).to_string(),
+            }
+        })
+        .collect()
 }
 
 /// Invalid env overrides abort before any state exists: fail closed.
@@ -482,6 +582,15 @@ struct FileSandbox {
 struct FileAuth {
     disabled: Option<bool>,
     token_ttl_secs: Option<u64>,
+    keys: Option<Vec<FileApiKey>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileApiKey {
+    token: String,
+    organization_id: uuid::Uuid,
+    principal: String,
 }
 
 #[cfg(test)]
@@ -590,5 +699,124 @@ mod tests {
         })
         .expect("valid");
         assert_eq!(cfg.storage.root, PathBuf::from("/var/lib/hephaestus"));
+    }
+
+    const ORG_A: &str = "018f3c1e-0000-7000-8000-00000000000a";
+    const ORG_B: &str = "018f3c1e-0000-7000-8000-00000000000b";
+
+    fn key_toml(org: &str, token: &str) -> String {
+        format!(
+            "[[auth.keys]]\ntoken = \"{token}\"\norganization_id = \"{org}\"\nprincipal = \"ci-bot\"\n"
+        )
+    }
+
+    #[test]
+    fn api_keys_load_from_file_and_debug_redacts() {
+        let body = format!(
+            "[auth]\n{}",
+            key_toml(ORG_A, "token-value-at-least-16-chars")
+        );
+        let (_dir, path) = write_tmp(&body);
+        let cfg = Config::load(Some(&path), no_env).expect("valid config with keys");
+        assert_eq!(cfg.auth.keys.len(), 1);
+        let key = &cfg.auth.keys[0];
+        assert_eq!(key.token, "token-value-at-least-16-chars");
+        assert_eq!(key.principal, "ci-bot");
+        assert_eq!(key.organization_id.to_string(), ORG_A);
+        let debug = format!("{cfg:?}");
+        assert!(
+            !debug.contains("token-value-at-least-16-chars"),
+            "token leaked in Debug: {debug}"
+        );
+        assert!(debug.contains("[redacted]"));
+    }
+
+    #[test]
+    fn api_keys_env_override_replaces_set() {
+        let env_value =
+            format!("bot-one,{ORG_A},env-token-one-16ch;bot-two,{ORG_B},env-token-two-16ch");
+        let cfg = Config::load(None, |k| {
+            (k == "HEPHAESTUS_AUTH_KEYS").then(|| env_value.clone())
+        })
+        .expect("valid config with env keys");
+        assert_eq!(cfg.auth.keys.len(), 2);
+        assert_eq!(cfg.auth.keys[0].principal, "bot-one");
+        assert_eq!(cfg.auth.keys[1].organization_id.to_string(), ORG_B);
+    }
+
+    #[test]
+    fn duplicate_tokens_rejected() {
+        let body = format!(
+            "[auth]\n{}{}",
+            key_toml(ORG_A, "duplicate-token-16ch"),
+            key_toml(ORG_B, "duplicate-token-16ch")
+        );
+        let (_dir, path) = write_tmp(&body);
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert_eq!(err.code(), "CONFIG_INVALID");
+        assert!(err.to_string().contains("duplicate"), "got: {err}");
+    }
+
+    #[test]
+    fn short_token_rejected() {
+        let body = format!("[auth]\n{}", key_toml(ORG_A, "short"));
+        let (_dir, path) = write_tmp(&body);
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert_eq!(err.code(), "CONFIG_INVALID");
+        assert!(err.to_string().contains("16 characters"), "got: {err}");
+    }
+
+    #[test]
+    fn empty_principal_rejected() {
+        let mut cfg = Config::default();
+        cfg.auth.keys.push(ApiKey {
+            token: "long-enough-token-16".into(),
+            organization_id: ORG_A.parse().expect("uuid"),
+            principal: "   ".into(),
+        });
+        let err = cfg.validate().unwrap_err();
+        assert_eq!(err.code(), "CONFIG_INVALID");
+    }
+
+    #[test]
+    fn production_requires_keys_when_auth_enabled() {
+        let cfg = Config {
+            environment: Environment::Production,
+            auth: AuthConfig {
+                disabled: false,
+                ..Default::default()
+            },
+            database: DatabaseConfig {
+                url: "postgres://db.internal:5432/hephaestus".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let Err(err) = cfg.validate() else {
+            panic!("production without keys must fail validation");
+        };
+        assert!(err.to_string().contains("auth.keys"), "got: {err}");
+    }
+
+    #[test]
+    fn production_accepts_configured_keys() {
+        let cfg = Config {
+            environment: Environment::Production,
+            auth: AuthConfig {
+                disabled: false,
+                keys: vec![ApiKey {
+                    token: "production-token-16".into(),
+                    organization_id: ORG_A.parse().expect("uuid"),
+                    principal: "operator".into(),
+                }],
+                ..Default::default()
+            },
+            database: DatabaseConfig {
+                url: "postgres://db.internal:5432/hephaestus".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cfg.validate().expect("valid production config");
     }
 }
