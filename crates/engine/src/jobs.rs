@@ -52,6 +52,23 @@ impl Queue {
             Queue::Deployment => "deployment",
         }
     }
+
+    /// Every queue in the system, in declaration order.
+    ///
+    /// Lets other layers pin their own vocabulary against the
+    /// authoritative enum instead of restating it by hand.
+    pub fn iter_all() -> impl Iterator<Item = Queue> {
+        [
+            Queue::Analysis,
+            Queue::Planning,
+            Queue::Implementation,
+            Queue::Verification,
+            Queue::Review,
+            Queue::Build,
+            Queue::Deployment,
+        ]
+        .into_iter()
+    }
 }
 
 /// The unit of work a worker pulls from a queue.

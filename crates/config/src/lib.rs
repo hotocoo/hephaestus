@@ -36,6 +36,11 @@ pub struct Config {
     pub sandbox: SandboxLimits,
     /// Authentication settings.
     pub auth: AuthConfig,
+    /// Model provider settings (worker-side; the API process holds no
+    /// provider credentials per ADR-009).
+    pub model: ModelConfig,
+    /// Worker loop settings.
+    pub worker: WorkerSettings,
     /// Environment name: development | test | staging | production.
     pub environment: Environment,
 }
@@ -49,6 +54,8 @@ impl Default for Config {
             telemetry: TelemetryConfig::default(),
             sandbox: SandboxLimits::default(),
             auth: AuthConfig::default(),
+            model: ModelConfig::default(),
+            worker: WorkerSettings::default(),
             environment: Environment::Development,
         }
     }
@@ -263,6 +270,110 @@ impl Default for AuthConfig {
     }
 }
 
+/// Queue names a worker process can serve.
+///
+/// Mirrors `hephaestus_engine::jobs::Queue::as_str`; the worker crate
+/// pins the two lists together with a test so they cannot drift. The
+/// `deployment` queue is deliberately absent: no deployment executor
+/// exists yet (ADR-008), and configuring workers for a queue that can
+/// never legitimately receive jobs would be simulation by another name.
+pub const WORKER_QUEUE_NAMES: [&str; 6] = [
+    "analysis",
+    "planning",
+    "implementation",
+    "verification",
+    "review",
+    "build",
+];
+
+/// Queues whose handlers run governed model sessions.
+pub const MODEL_BACKED_QUEUES: [&str; 3] = ["planning", "implementation", "review"];
+
+/// Model provider settings.
+///
+/// The API server never holds these credentials (ADR-009); only the
+/// worker binary builds providers. The API key is a bearer secret:
+/// it is redacted from Debug output, and serialized config must never
+/// be logged.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ModelConfig {
+    /// Base URL of an OpenAI-compatible endpoint, e.g.
+    /// https://gateway.internal/v1. Empty means unconfigured.
+    pub base_url: String,
+    /// Bearer credential sent as Authorization header. Absent is legal
+    /// only against gateways that do their own network-level access
+    /// control; production demands it.
+    pub api_key: Option<String>,
+    /// Default model identifier served by the endpoint.
+    pub model: String,
+    /// Per-request wall-clock timeout in seconds.
+    pub timeout_secs: u64,
+    /// Extra attempts after the first on retryable failures.
+    pub max_retries: u32,
+}
+
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            api_key: None,
+            model: String::new(),
+            timeout_secs: 120,
+            max_retries: 2,
+        }
+    }
+}
+
+impl fmt::Debug for ModelConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModelConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
+            .field("model", &self.model)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("max_retries", &self.max_retries)
+            .finish()
+    }
+}
+
+/// Worker loop settings ([worker]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct WorkerSettings {
+    /// Stable lease-owner identity. Empty means generate one at start.
+    pub id: String,
+    /// Queues this worker serves. Every name must be a known queue;
+    /// duplicates and unknown names fail validation (fail closed).
+    pub queues: Vec<String>,
+    /// Lease duration in seconds. Heartbeats renew at ttl/3.
+    pub lease_ttl_secs: u64,
+    /// Idle poll interval in milliseconds.
+    pub poll_interval_ms: u64,
+    /// Concurrent job slots per worker process.
+    pub concurrency: u32,
+}
+
+impl Default for WorkerSettings {
+    fn default() -> Self {
+        // Defaults deliberately serve ONLY deterministic queues: they
+        // validate cleanly with no model credentials anywhere. Serving
+        // model-backed queues is an explicit operator decision that
+        // drags [model] configuration along with it (fail closed).
+        Self {
+            id: String::new(),
+            queues: vec![
+                "analysis".to_string(),
+                "verification".to_string(),
+                "build".to_string(),
+            ],
+            lease_ttl_secs: 300,
+            poll_interval_ms: 500,
+            concurrency: 4,
+        }
+    }
+}
+
 impl Config {
     /// Load layered configuration.
     ///
@@ -369,6 +480,42 @@ impl Config {
                     .collect();
             }
         }
+        if let Some(m) = f.model {
+            if let Some(v) = m.base_url {
+                self.model.base_url = v;
+            }
+            if let Some(v) = m.api_key {
+                self.model.api_key = if v.trim().is_empty() { None } else { Some(v) };
+            }
+            if let Some(v) = m.model {
+                self.model.model = v;
+            }
+            if let Some(v) = m.timeout_secs {
+                self.model.timeout_secs = v;
+            }
+            if let Some(v) = m.max_retries {
+                self.model.max_retries = v;
+            }
+        }
+        if let Some(w) = f.worker {
+            // The file section defines the complete queue set, matching
+            // how [auth] keys replace rather than extend.
+            if let Some(queues) = w.queues {
+                self.worker.queues = queues;
+            }
+            if let Some(v) = w.id {
+                self.worker.id = v;
+            }
+            if let Some(v) = w.lease_ttl_secs {
+                self.worker.lease_ttl_secs = v;
+            }
+            if let Some(v) = w.poll_interval_ms {
+                self.worker.poll_interval_ms = v;
+            }
+            if let Some(v) = w.concurrency {
+                self.worker.concurrency = v;
+            }
+        }
         if let Some(e) = f.environment {
             self.environment = e;
         }
@@ -400,6 +547,28 @@ impl Config {
         }
         if let Some(v) = env("HEPHAESTUS_AUTH_KEYS") {
             self.auth.keys = parse_keys_env(&v);
+        }
+        if let Some(v) = env("HEPHAESTUS_MODEL_BASE_URL") {
+            self.model.base_url = v;
+        }
+        if let Some(v) = env("HEPHAESTUS_MODEL_API_KEY")
+            && !v.is_empty()
+        {
+            self.model.api_key = Some(v);
+        }
+        if let Some(v) = env("HEPHAESTUS_MODEL_NAME") {
+            self.model.model = v;
+        }
+        if let Some(v) = env("HEPHAESTUS_WORKER_ID") {
+            self.worker.id = v;
+        }
+        if let Some(v) = env("HEPHAESTUS_WORKER_QUEUES") {
+            self.worker.queues = v
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
         }
     }
 
@@ -452,6 +621,72 @@ impl Config {
                 "telemetry.log_level must be one of error|warn|info|debug|trace".into(),
             )
         })?;
+        // Worker settings fail closed: an operator who typos a queue
+        // name must not discover it from silent idleness hours later.
+        if self.worker.queues.is_empty() {
+            return Err(hephaestus_core::Error::Config(
+                "worker.queues must not be empty".into(),
+            ));
+        }
+        let mut seen_queues = HashSet::new();
+        for q in &self.worker.queues {
+            let name = q.trim();
+            if name == "deployment" {
+                return Err(hephaestus_core::Error::Config(
+                    "worker.queues: 'deployment' has no executor yet (ADR-008); runs demanding                      deployment fail loudly by design, so no worker may claim to serve it"
+                        .into(),
+                ));
+            }
+            if !WORKER_QUEUE_NAMES.contains(&name) {
+                return Err(hephaestus_core::Error::Config(format!(
+                    "worker.queues contains unknown queue {name:?}; valid queues are {}",
+                    WORKER_QUEUE_NAMES.join(", ")
+                )));
+            }
+            if !seen_queues.insert(name) {
+                return Err(hephaestus_core::Error::Config(format!(
+                    "worker.queues contains duplicate entry {name:?}"
+                )));
+            }
+        }
+        if !(10..=3600).contains(&self.worker.lease_ttl_secs) {
+            return Err(hephaestus_core::Error::Config(
+                "worker.lease_ttl_secs must be within 10..=3600 (heartbeats renew at ttl/3)".into(),
+            ));
+        }
+        if self.worker.poll_interval_ms < 10 {
+            return Err(hephaestus_core::Error::Config(
+                "worker.poll_interval_ms must be at least 10".into(),
+            ));
+        }
+        if !(1..=64).contains(&self.worker.concurrency) {
+            return Err(hephaestus_core::Error::Config(
+                "worker.concurrency must be within 1..=64".into(),
+            ));
+        }
+        // Model-backed queues demand a configured provider; serving
+        // them without one would retry every job into dead-letter.
+        let needs_model = self
+            .worker
+            .queues
+            .iter()
+            .any(|q| MODEL_BACKED_QUEUES.contains(&q.trim()));
+        if needs_model {
+            if !(self.model.base_url.starts_with("http://")
+                || self.model.base_url.starts_with("https://"))
+            {
+                return Err(hephaestus_core::Error::Config(
+                    "model.base_url must be an http(s) URL when any of planning, implementation                      or review queues are served"
+                        .into(),
+                ));
+            }
+            if self.model.model.trim().is_empty() {
+                return Err(hephaestus_core::Error::Config(
+                    "model.model must be set when any of planning, implementation or review                      queues are served"
+                        .into(),
+                ));
+            }
+        }
         if self.environment.is_production() {
             if self.auth.disabled {
                 return Err(hephaestus_core::Error::Config(
@@ -471,6 +706,18 @@ impl Config {
             if self.auth.keys.is_empty() {
                 return Err(hephaestus_core::Error::Config(
                     "production requires at least one auth.keys entry when auth is enabled".into(),
+                ));
+            }
+            let needs_model = self
+                .worker
+                .queues
+                .iter()
+                .any(|q| MODEL_BACKED_QUEUES.contains(&q.trim()));
+            if needs_model && self.model.api_key.is_none() {
+                return Err(hephaestus_core::Error::Config(
+                    "production requires model.api_key when any of planning, implementation or \
+                     review queues are served"
+                        .into(),
                 ));
             }
         }
@@ -535,6 +782,8 @@ struct ConfigFile {
     telemetry: Option<FileTelemetry>,
     sandbox: Option<FileSandbox>,
     auth: Option<FileAuth>,
+    model: Option<FileModel>,
+    worker: Option<FileWorker>,
     environment: Option<Environment>,
 }
 
@@ -591,6 +840,26 @@ struct FileApiKey {
     token: String,
     organization_id: uuid::Uuid,
     principal: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct FileModel {
+    base_url: Option<String>,
+    api_key: Option<String>,
+    model: Option<String>,
+    timeout_secs: Option<u64>,
+    max_retries: Option<u32>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct FileWorker {
+    id: Option<String>,
+    queues: Option<Vec<String>>,
+    lease_ttl_secs: Option<u64>,
+    poll_interval_ms: Option<u64>,
+    concurrency: Option<u32>,
 }
 
 #[cfg(test)]
@@ -818,5 +1087,180 @@ mod tests {
             ..Default::default()
         };
         cfg.validate().expect("valid production config");
+    }
+
+    #[test]
+    fn worker_defaults_serve_deterministic_queues_only() {
+        let cfg = Config::load(None, no_env).expect("defaults must be valid");
+        assert_eq!(
+            cfg.worker.queues,
+            vec!["analysis", "verification", "build"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+        assert!(!cfg.worker.queues.contains(&"deployment".to_string()));
+        // Unconfigured model is fine while only deterministic queues run.
+        assert_eq!(cfg.model.base_url, "");
+    }
+
+    #[test]
+    fn file_model_and_worker_sections_parse() {
+        let (_dir, path) = write_tmp(
+            "[model]\nbase_url = \"https://gateway.internal/v1\"\napi_key = \"secret\"\nmodel = \"forge-large\"\ntimeout_secs = 30\n\n[worker]\nid = \"worker-a\"\nqueues = [\"analysis\", \"planning\"]\nlease_ttl_secs = 60\npoll_interval_ms = 250\nconcurrency = 2\n",
+        );
+        let cfg = Config::load(Some(&path), no_env).expect("must load");
+        assert_eq!(cfg.model.base_url, "https://gateway.internal/v1");
+        assert_eq!(cfg.model.api_key.as_deref(), Some("secret"));
+        assert_eq!(cfg.model.model, "forge-large");
+        assert_eq!(cfg.model.timeout_secs, 30);
+        assert_eq!(cfg.worker.id, "worker-a");
+        assert_eq!(
+            cfg.worker.queues,
+            vec!["analysis".to_string(), "planning".to_string()]
+        );
+        assert_eq!(cfg.worker.lease_ttl_secs, 60);
+        assert_eq!(cfg.worker.poll_interval_ms, 250);
+        assert_eq!(cfg.worker.concurrency, 2);
+    }
+
+    #[test]
+    fn debug_output_redacts_model_api_key() {
+        let mut cfg = Config::default();
+        cfg.model.api_key = Some("super-secret-value".into());
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("super-secret-value"), "got: {rendered}");
+        assert!(rendered.contains("[redacted]"));
+    }
+
+    #[test]
+    fn env_overrides_model_and_worker() {
+        let cfg = Config::load(None, |k| match k {
+            "HEPHAESTUS_MODEL_BASE_URL" => Some("http://127.0.0.1:9/v1".into()),
+            "HEPHAESTUS_MODEL_API_KEY" => Some("env-key".into()),
+            "HEPHAESTUS_MODEL_NAME" => Some("m".into()),
+            "HEPHAESTUS_WORKER_QUEUES" => Some("analysis, verification ,".into()),
+            _ => None,
+        })
+        .expect("must load");
+        assert_eq!(cfg.model.base_url, "http://127.0.0.1:9/v1");
+        assert_eq!(cfg.model.api_key.as_deref(), Some("env-key"));
+        assert_eq!(cfg.model.model, "m");
+        assert_eq!(
+            cfg.worker.queues,
+            vec!["analysis".to_string(), "verification".to_string()]
+        );
+    }
+
+    #[test]
+    fn unknown_queue_rejected() {
+        let (_dir, path) = write_tmp("[worker]\nqueues = [\"anlysis\"]\n");
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert_eq!(err.code(), "CONFIG_INVALID");
+        assert!(err.to_string().contains("unknown queue"), "got: {err}");
+    }
+
+    #[test]
+    fn deployment_queue_rejected_with_reason() {
+        let (_dir, path) = write_tmp("[worker]\nqueues = [\"analysis\", \"deployment\"]\n");
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert!(err.to_string().contains("no executor yet"), "got: {err}");
+    }
+
+    #[test]
+    fn duplicate_queues_rejected() {
+        let (_dir, path) = write_tmp("[worker]\nqueues = [\"build\", \"build\"]\n");
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert!(err.to_string().contains("duplicate"), "got: {err}");
+    }
+
+    #[test]
+    fn empty_queue_set_rejected() {
+        let (_dir, path) = write_tmp("[worker]\nqueues = []\n");
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert!(err.to_string().contains("must not be empty"), "got: {err}");
+    }
+
+    #[test]
+    fn model_backed_queue_requires_provider() {
+        for queue in ["planning", "implementation", "review"] {
+            let body = format!("[worker]\nqueues = [\"{queue}\"]\n");
+            let (_dir, path) = write_tmp(&body);
+            let err = Config::load(Some(&path), no_env).unwrap_err();
+            assert!(
+                err.to_string().contains("model.base_url"),
+                "{queue}: got {err}"
+            );
+
+            let body = format!(
+                "[model]\nbase_url = \"http://127.0.0.1:9/v1\"\n[worker]\nqueues = [\"{queue}\"]\n"
+            );
+            let (_dir, path) = write_tmp(&body);
+            let err = Config::load(Some(&path), no_env).unwrap_err();
+            assert!(
+                err.to_string().contains("model.model"),
+                "{queue}: got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn deterministic_only_worker_needs_no_model() {
+        let (_dir, path) =
+            write_tmp("[worker]\nqueues = [\"analysis\", \"verification\", \"build\"]\n");
+        let cfg = Config::load(Some(&path), no_env).expect("no model needed");
+        assert!(cfg.model.base_url.is_empty());
+    }
+
+    #[test]
+    fn lease_ttl_bounds_rejected() {
+        let (_dir, path) = write_tmp("[worker]\nlease_ttl_secs = 5\n");
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert!(err.to_string().contains("lease_ttl_secs"), "got: {err}");
+
+        let (_dir, path) = write_tmp("[worker]\nlease_ttl_secs = 3601\n");
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert!(err.to_string().contains("lease_ttl_secs"), "got: {err}");
+    }
+
+    #[test]
+    fn concurrency_bounds_rejected() {
+        let (_dir, path) = write_tmp("[worker]\nconcurrency = 0\n");
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert!(err.to_string().contains("concurrency"), "got: {err}");
+    }
+
+    #[test]
+    fn production_demands_model_key_for_model_queues() {
+        let cfg = Config {
+            environment: Environment::Production,
+            auth: AuthConfig {
+                keys: vec![ApiKey {
+                    token: "production-token-16".into(),
+                    organization_id: ORG_A.parse().expect("uuid"),
+                    principal: "operator".into(),
+                }],
+                ..Default::default()
+            },
+            database: DatabaseConfig {
+                url: "postgres://db.internal:5432/hephaestus".into(),
+                ..Default::default()
+            },
+            model: ModelConfig {
+                base_url: "https://gateway.internal/v1".into(),
+                model: "forge-large".into(),
+                api_key: None,
+                ..Default::default()
+            },
+            worker: WorkerSettings {
+                queues: vec!["planning".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let Err(err) = cfg.validate() else {
+            panic!("production without model key must fail validation");
+        };
+        assert!(err.to_string().contains("model.api_key"), "got: {err}");
     }
 }

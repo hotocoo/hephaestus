@@ -71,6 +71,14 @@ Currently working end-to-end:
   production demands at least one key), errors map onto the core
   taxonomy with stable public codes, and every endpoint scopes its
   store access by the authenticated principal's tenant
+* Worker runtime (ADR-010): a `hephaestus-worker` binary that
+  assembles the full pipeline registry from layered configuration and
+  runs the durable job loop with graceful drain - analysis, planning,
+  governed implementation and repair, deterministic verification,
+  automated review, artifact builds. Model credentials live only in
+  workers that serve model-backed queues; queue sets are validated
+  fail-closed at load, and the unservable `deployment` queue is
+  refused outright until a real executor exists
 
 ## Architecture (in progress)
 
@@ -118,7 +126,17 @@ createdb hephaestus_test
 
 # Run the full Rust test suite (unit + property + database integration)
 HEPHAESTUS_TEST_DATABASE_URL=postgres://localhost/hephaestus_test cargo test --workspace
+
+# Run the control plane: one API server (owns migrations) plus workers.
+cargo run -p hephaestus-api --bin hephaestus-server &
+HEPHAESTUS_DATABASE_URL=postgres://localhost/hephaestus_dev \
+HEPHAESTUS_STORAGE_ROOT=.hephaestus/data \
+cargo run -p hephaestus-worker --bin hephaestus-worker
 ```
+
+Workers serve only deterministic queues by default; serving planning,
+implementation or review additionally requires `[model]` provider
+settings (see [`.env.example`](.env.example)).
 
 Configuration precedence: built-in defaults -> TOML file -> environment
 (`HEPHAESTUS_` prefix). See [`.env.example`](.env.example).

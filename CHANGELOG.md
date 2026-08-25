@@ -90,3 +90,19 @@ until the 1.0 API contract freezes per ADR-011.
   stable public codes, liveness/readiness probes, body-size limits from
   configuration, graceful shutdown, and database-backed integration
   tests over authentication, tenant isolation and both gates.
+- Worker runtime (ADR-010): the `hephaestus-worker` binary assembling
+  the full pipeline registry from layered configuration - repository
+  analysis, requirement extraction and plan generation, governed
+  implementation and repair, deterministic verification, automated
+  review, artifact builds - and running the durable worker loop with
+  graceful drain until SIGINT. Model credentials live only here: the
+  OpenAI-compatible provider is constructed exactly when configured
+  queues include a model-backed stage, validated fail-closed at load
+  (model-backed queues demand provider settings; production demands an
+  API key; deterministic-only defaults validate with no credentials).
+  Operator-selected queue sets reject unknown names, duplicates, empty
+  sets, and the not-yet-servable `deployment` queue outright; the
+  config vocabulary is pinned against the engine's canonical enum. An
+  end-to-end test drives the real binary from task intake through
+  audited governed sessions to `awaiting_approval` against real
+  PostgreSQL, git and a stub chat-completions endpoint.

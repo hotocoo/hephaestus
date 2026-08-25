@@ -1,0 +1,37 @@
+[package]
+name = "hephaestus-worker"
+description = "Durable job-processing worker driving the Hephaestus pipelines"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+hephaestus-agent = { path = "../agent" }
+hephaestus-config = { path = "../config" }
+hephaestus-core = { path = "../core" }
+hephaestus-db = { path = "../db" }
+hephaestus-engine = { path = "../engine" }
+
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+
+[[bin]]
+name = "hephaestus-worker"
+path = "src/main.rs"
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+hephaestus-repo = { path = "../repo" }
+predicates = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
