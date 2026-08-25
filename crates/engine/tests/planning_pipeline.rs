@@ -20,10 +20,11 @@ use hephaestus_core::id::{OrganizationId, ProjectId, RepositoryId, WorkflowRunId
 use hephaestus_core::state::{TransitionEvent, WorkflowState};
 use hephaestus_db::Db;
 use hephaestus_db::tasks::NewTask;
+use hephaestus_engine::SessionDeps;
 use hephaestus_engine::analysis::{AnalysisHandler, WorkspaceLayout};
 use hephaestus_engine::intake::{IntakeRequest, IntakeService};
 use hephaestus_engine::jobs::JobPayload;
-use hephaestus_engine::planning::{ExtractionHandler, PlannerDeps, PlanningHandler};
+use hephaestus_engine::planning::{ExtractionHandler, PlanningHandler};
 use hephaestus_engine::worker::{
     HandlerOutcome, HandlerRegistry, JobHandler, Worker, WorkerConfig,
 };
@@ -214,7 +215,7 @@ async fn pipeline_reaches_approval_gate_end_to_end() {
     responses.extend(std::iter::repeat_n(final_of(REQUIREMENTS_DOC), 8));
     responses.extend(std::iter::repeat_n(final_of(PLAN_DOC), 8));
     let scripted = Arc::new(Scripted::new(responses));
-    let deps = PlannerDeps::new(scripted, Arc::new(CollectingSink::default()), "test-model");
+    let deps = SessionDeps::new(scripted, Arc::new(CollectingSink::default()), "test-model");
     let layout = WorkspaceLayout::new(storage.path());
 
     let registry = HandlerRegistry::new()
@@ -377,7 +378,7 @@ async fn planning_without_requirements_fails_permanently() {
     let db = test_db().await;
     let (org, task, run) = seeded_task_and_run(&db).await;
     let scripted = Arc::new(Scripted::new(vec![]));
-    let deps = PlannerDeps::new(scripted, Arc::new(CollectingSink::default()), "m");
+    let deps = SessionDeps::new(scripted, Arc::new(CollectingSink::default()), "m");
     let layout = WorkspaceLayout::new(tempfile::tempdir().expect("tmp").path());
     let handler = PlanningHandler::new(deps, layout);
 
@@ -425,7 +426,7 @@ async fn garbage_planner_output_is_retryable_and_persists_nothing() {
     // Session-protocol-valid final whose CONTENT is not a valid plan
     // document: the handler must classify this as retryable noise.
     let scripted = Arc::new(Scripted::new(vec![final_of("definitely not json")]));
-    let deps = PlannerDeps::new(scripted, Arc::new(CollectingSink::default()), "m");
+    let deps = SessionDeps::new(scripted, Arc::new(CollectingSink::default()), "m");
     let layout = WorkspaceLayout::new(tempfile::tempdir().expect("tmp").path());
     let handler = PlanningHandler::new(deps, layout);
 
@@ -478,7 +479,7 @@ async fn extraction_uses_tools_audited_and_chains_plan_job() {
         final_of(REQUIREMENTS_DOC),
     ]));
     let sink = Arc::new(CollectingSink::default());
-    let deps = PlannerDeps::new(
+    let deps = SessionDeps::new(
         scripted,
         Arc::clone(&sink) as Arc<dyn hephaestus_agent::session::DecisionSink>,
         "m",

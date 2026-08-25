@@ -414,6 +414,71 @@ impl Db {
         .map_err(crate::map_sqlx)
     }
 
+    /// Record the human decision on the OPEN plan-approval gate of a
+    /// run and emit the typed event in the SAME transaction.
+    ///
+    /// Conflict when no undecided gate exists - double decisions and
+    /// decisions on never-gated runs are refused, not absorbed.
+    pub async fn decide_plan_approval(
+        &self,
+        org: OrganizationId,
+        run: WorkflowRunId,
+        approved: bool,
+        principal: &str,
+        reason: Option<&str>,
+    ) -> Result<Uuid> {
+        let mut tx = self.pool().begin().await.map_err(crate::map_sqlx)?;
+
+        let updated: Option<(Uuid, Uuid)> = sqlx::query_as(
+            "UPDATE approvals a
+                SET decision = $3, decided_by = $4, decided_at = now(), reason = $5
+               FROM tasks t
+              WHERE a.task_id = t.id AND a.run_id = $1
+                AND a.gate = 'plan' AND a.decision IS NULL
+                AND t.organization_id = $2
+            RETURNING a.id, a.task_id",
+        )
+        .bind(run.as_uuid())
+        .bind(org.as_uuid())
+        .bind(if approved { "approved" } else { "rejected" })
+        .bind(principal)
+        .bind(reason)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(crate::map_sqlx)?;
+        let Some((approval_id, task_id)) = updated else {
+            return Err(Error::Conflict {
+                message: "no open plan approval for this run".into(),
+            });
+        };
+
+        let payload = serde_json::to_value(hephaestus_core::event::EventPayload::ApprovalDecided {
+            approval_id: hephaestus_core::id::HephaestusId(approval_id),
+            approved,
+            principal: principal.to_string(),
+        })
+        .map_err(|e| Error::Storage(Box::new(e)))?;
+        sqlx::query(
+            "INSERT INTO events
+               (id, schema_version, organization_id, aggregate, aggregate_id,
+                correlation_id, provenance, payload)
+             SELECT $1, $2, $3, 'task', $4, r.correlation_id, 'user', $6
+             FROM workflow_runs r WHERE r.id = $5",
+        )
+        .bind(Uuid::now_v7())
+        .bind(i32::try_from(hephaestus_core::event::EVENT_ENVELOPE_VERSION).unwrap_or(i32::MAX))
+        .bind(org.as_uuid())
+        .bind(task_id)
+        .bind(run.as_uuid())
+        .bind(payload)
+        .execute(&mut *tx)
+        .await
+        .map_err(crate::map_sqlx)?;
+
+        tx.commit().await.map_err(crate::map_sqlx)?;
+        Ok(approval_id)
+    }
+
     /// Remote URL of a repository within an organization.
     pub async fn repository_remote(
         &self,
@@ -453,7 +518,7 @@ impl Db {
              FROM workflow_runs WHERE id = $5",
         )
         .bind(Uuid::now_v7())
-        .bind(1i32)
+        .bind(i32::try_from(hephaestus_core::event::EVENT_ENVELOPE_VERSION).unwrap_or(i32::MAX))
         .bind(org.as_uuid())
         .bind(task.as_uuid())
         .bind(run.as_uuid())

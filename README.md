@@ -47,6 +47,13 @@ Currently working end-to-end:
   deterministically, retried within queue budgets when malformed),
   transactional requirements/plan persistence, and a human approval
   gate that parks the run at `awaiting_approval`
+* Execution pipeline: idempotent approval decisions that bootstrap
+  executions over snapshot-isolated plan steps, governed implementer
+  sessions with strict JSON outcome documents, deterministic
+  verification through the governed tool runtime with append-only
+  evidence, bounded fix/review loops owned by the execution layer
+  (ADR-007), and a read-only automated review gate that parks
+  finished work at `awaiting_merge`
 
 ## Architecture (in progress)
 

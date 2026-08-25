@@ -12,6 +12,7 @@
 
 pub mod audit;
 pub mod events;
+pub mod execution;
 pub mod intake;
 pub mod jobs;
 pub mod planning;

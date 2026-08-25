@@ -49,3 +49,20 @@ until the 1.0 API contract freezes per ADR-011.
   `awaiting_approval`. Handler-level failure classification maps
   transient problems to bounded retries and configuration or data
   problems to permanent failure.
+- Execution pipeline (ADR-007): a decision service over the plan
+  approval gate whose durable effects are individually idempotent and
+  safely replayable after crashes; executions that snapshot approved
+  plan steps into their own progress rows before work starts;
+  governed Implementer sessions executing one step at a time against
+  strict JSON outcome documents ("completed"/"blocked", summary,
+  changed-file evidence); deterministic verification suites mapped
+  from each plan's required layers and executed through the governed
+  tool runtime with Verifier capabilities only, recorded as
+  append-only evidence; fix and review loops that re-enter
+  implementation through repair sessions framed by verification
+  output or reviewer findings, with budgets owned by the execution
+  layer as counts over durable evidence rows; blocked implementations
+  fail the run loudly instead of guessing; a read-only Reviewer gate
+  (hard policy invariant) that approves over the working-tree diff
+  and parks finished work at `awaiting_merge` pending human or CI
+  merge.

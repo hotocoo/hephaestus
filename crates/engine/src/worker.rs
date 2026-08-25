@@ -50,6 +50,10 @@ pub struct HandlerRegistry {
     analyze: Option<Arc<dyn JobHandler>>,
     extract_requirements: Option<Arc<dyn JobHandler>>,
     generate_plan: Option<Arc<dyn JobHandler>>,
+    execute_step: Option<Arc<dyn JobHandler>>,
+    repair_execution: Option<Arc<dyn JobHandler>>,
+    run_verification: Option<Arc<dyn JobHandler>>,
+    run_review: Option<Arc<dyn JobHandler>>,
 }
 
 impl HandlerRegistry {
@@ -76,14 +80,42 @@ impl HandlerRegistry {
         self
     }
 
+    /// Register the step-execution handler.
+    pub fn with_execute_step(mut self, h: Arc<dyn JobHandler>) -> Self {
+        self.execute_step = Some(h);
+        self
+    }
+
+    /// Register the repair-round handler.
+    pub fn with_repair_execution(mut self, h: Arc<dyn JobHandler>) -> Self {
+        self.repair_execution = Some(h);
+        self
+    }
+
+    /// Register the verification handler.
+    pub fn with_run_verification(mut self, h: Arc<dyn JobHandler>) -> Self {
+        self.run_verification = Some(h);
+        self
+    }
+
+    /// Register the automated-review handler.
+    pub fn with_run_review(mut self, h: Arc<dyn JobHandler>) -> Self {
+        self.run_review = Some(h);
+        self
+    }
+
     fn route(&self, payload: &JobPayload) -> Option<Arc<dyn JobHandler>> {
         match payload {
             JobPayload::AnalyzeRepository { .. } => self.analyze.clone(),
             JobPayload::ExtractRequirements { .. } => self.extract_requirements.clone(),
             JobPayload::GeneratePlan { .. } => self.generate_plan.clone(),
-            // Implementation/verification/build handlers land with
-            // their phases; route misses fail the job permanently so
-            // unregistered kinds are visible to operators.
+            JobPayload::ExecuteStep { .. } => self.execute_step.clone(),
+            JobPayload::RepairExecution { .. } => self.repair_execution.clone(),
+            JobPayload::RunVerification { .. } => self.run_verification.clone(),
+            JobPayload::RunReview { .. } => self.run_review.clone(),
+            // Build/deployment handlers land with their phases; route
+            // misses fail the job permanently so unregistered kinds are
+            // visible to operators.
             _ => None,
         }
     }
@@ -108,7 +140,13 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             id: format!("worker-{}", Uuid::now_v7().simple()),
-            queues: vec!["analysis".into(), "planning".into()],
+            queues: vec![
+                "analysis".into(),
+                "planning".into(),
+                "implementation".into(),
+                "verification".into(),
+                "review".into(),
+            ],
             lease_ttl_secs: 300,
             poll_interval: Duration::from_millis(500),
             concurrency: 4,
@@ -282,6 +320,8 @@ fn kind_of(p: &JobPayload) -> &'static str {
         JobPayload::GeneratePlan { .. } => "generate_plan",
         JobPayload::ExecuteStep { .. } => "execute_step",
         JobPayload::RunVerification { .. } => "run_verification",
+        JobPayload::RepairExecution { .. } => "repair_execution",
+        JobPayload::RunReview { .. } => "run_review",
         JobPayload::BuildArtifact { .. } => "build_artifact",
     }
 }

@@ -127,7 +127,7 @@ impl Db {
              FROM workflow_runs WHERE id = $4",
         )
         .bind(Uuid::now_v7())
-        .bind(1i32)
+        .bind(i32::try_from(hephaestus_core::event::EVENT_ENVELOPE_VERSION).unwrap_or(i32::MAX))
         .bind(org.as_uuid())
         .bind(id.as_uuid())
         .bind(payload)

@@ -14,7 +14,11 @@ use uuid::Uuid;
 use crate::id::{HephaestusId, OrganizationId};
 
 /// Current envelope version. Bump on incompatible wire changes.
-pub const EVENT_ENVELOPE_VERSION: u32 = 1;
+///
+/// v2 adds the execution-phase payloads (plan decisions, executions,
+/// steps, verifications, reviews). v1 envelopes stay readable; the new
+/// variants simply never appear in them.
+pub const EVENT_ENVELOPE_VERSION: u32 = 2;
 
 /// Where a piece of content originated.
 ///
@@ -90,6 +94,22 @@ pub enum EventPayload {
         /// The plan.
         plan_id: HephaestusId,
     },
+    /// An execution attempt started over an approved plan.
+    ExecutionStarted {
+        /// The execution.
+        execution_id: HephaestusId,
+        /// The plan being executed.
+        plan_id: HephaestusId,
+    },
+    /// One plan step reached a terminal outcome inside an execution.
+    StepExecuted {
+        /// Owning execution.
+        execution_id: HephaestusId,
+        /// The executed step.
+        step_id: HephaestusId,
+        /// Outcome: "completed" or "failed".
+        outcome: String,
+    },
     /// A workflow run changed state.
     WorkflowStateChanged {
         /// The run.
@@ -125,6 +145,24 @@ pub enum EventPayload {
         passed: u32,
         /// Failed test count.
         failed: u32,
+    },
+    /// A deterministic verification suite finished for an execution.
+    VerificationCompleted {
+        /// Owning execution.
+        execution_id: HephaestusId,
+        /// The verification record.
+        verification_id: HephaestusId,
+        /// Whether every required layer passed.
+        passed: bool,
+    },
+    /// An automated review produced a verdict for an execution.
+    ReviewCompleted {
+        /// Owning execution.
+        execution_id: HephaestusId,
+        /// "approved" or "request_changes".
+        decision: String,
+        /// Blocking findings when changes were requested.
+        blocking: Vec<String>,
     },
     /// Build finished.
     BuildCompleted {

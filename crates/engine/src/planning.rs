@@ -12,17 +12,11 @@
 //! generation; planning persists the plan, opens the human approval
 //! gate, and advances the run to `awaiting_approval`.
 
-use std::sync::Arc;
-
 use chrono::Utc;
 use serde::Deserialize;
-use serde::de::DeserializeOwned;
 
-use hephaestus_agent::provider::ModelProvider;
-use hephaestus_agent::role::{AgentRole, RoleManifest};
-use hephaestus_agent::session::{
-    AgentSession, DecisionSink, RunSpec, SessionLimits, SessionStatus, UntrustedFact,
-};
+use hephaestus_agent::role::AgentRole;
+use hephaestus_agent::session::UntrustedFact;
 use hephaestus_core::domain::{
     Plan, PlanStep, Requirement, RequirementCategory, RequirementKind, StrategyNotes,
 };
@@ -30,9 +24,9 @@ use hephaestus_core::id::{PlanId, StepId, TaskId, WorkflowRunId};
 use hephaestus_core::state::{TransitionEvent, WorkflowState};
 use hephaestus_core::{Error, Result};
 use hephaestus_db::Db;
-use hephaestus_tools::registry::ToolRegistry;
 
 use crate::analysis::{StageError, WorkspaceLayout, chain_job};
+use crate::governed::{SessionDeps, parse_strict, run_role_session};
 use crate::jobs::{JobPayload, Queue};
 use crate::worker::{HandlerOutcome, JobHandler};
 
@@ -129,15 +123,6 @@ pub struct PlanDocument {
     /// Rollback / deployment / verification notes.
     #[serde(default)]
     pub strategy: StrategyNotes,
-}
-
-/// Parse a stage's final answer: exactly one JSON object, nothing else.
-/// Trailing prose, code fences, or multiple objects fail loudly.
-fn parse_document<T: DeserializeOwned>(final_text: &str) -> Result<T> {
-    serde_json::from_str(final_text.trim()).map_err(|e| Error::Validation {
-        field: "final".into(),
-        message: format!("planner final answer is not a valid document: {e}"),
-    })
 }
 
 fn category_of(c: DraftCategory) -> RequirementCategory {
@@ -248,80 +233,7 @@ pub fn build_plan(task_id: TaskId, doc: PlanDocument) -> Result<Plan> {
     Ok(plan)
 }
 
-// ---------- governed session plumbing ----------
-
-/// Everything both planning stages need beyond the job payload:
-/// model boundary, audit destination, tool registry and budgets.
-#[derive(Clone)]
-pub struct PlannerDeps {
-    /// Model boundary.
-    pub provider: Arc<dyn ModelProvider>,
-    /// Where authorization decisions are durably recorded.
-    pub sink: Arc<dyn DecisionSink>,
-    /// Registered tools (built-ins only today).
-    pub registry: Arc<ToolRegistry>,
-    /// Model identifier served by the provider.
-    pub model: String,
-    /// Run budgets.
-    pub limits: SessionLimits,
-}
-
-impl PlannerDeps {
-    /// Dependencies with built-in registry and default budgets.
-    pub fn new(
-        provider: Arc<dyn ModelProvider>,
-        sink: Arc<dyn DecisionSink>,
-        model: impl Into<String>,
-    ) -> Self {
-        Self {
-            provider,
-            sink,
-            registry: Arc::new(ToolRegistry::with_builtins()),
-            model: model.into(),
-            limits: SessionLimits::default(),
-        }
-    }
-}
-
-/// Run one governed Planner session to its final answer.
-async fn run_planner(
-    deps: &PlannerDeps,
-    workspace: std::path::PathBuf,
-    objective: &str,
-    facts: &[UntrustedFact],
-) -> std::result::Result<String, StageError> {
-    let manifest = RoleManifest::built_in(AgentRole::Planner);
-    let spec = RunSpec {
-        model: deps.model.clone(),
-        actor: format!("agent:{}", manifest.role.as_str()),
-        provider: Arc::clone(&deps.provider),
-        sink: Arc::clone(&deps.sink),
-        limits: deps.limits.clone(),
-    };
-    // Manifest validation failure is configuration, not transience.
-    let session = AgentSession::new(&manifest, &deps.registry, workspace, spec)
-        .map_err(StageError::Permanent)?;
-    let outcome = session
-        .run(objective, facts)
-        .await
-        .map_err(StageError::Retryable)?;
-    match outcome.status {
-        SessionStatus::Completed => outcome.final_text.ok_or_else(|| {
-            StageError::Permanent(Error::Validation {
-                field: "session".into(),
-                message: "completed without final text".into(),
-            })
-        }),
-        SessionStatus::Failed { reason } => Err(StageError::Permanent(Error::Validation {
-            field: "session".into(),
-            message: format!("agent run stopped: {reason}"),
-        })),
-        SessionStatus::BudgetExhausted { what } => Err(StageError::Retryable(Error::Validation {
-            field: "budget".into(),
-            message: format!("agent run exhausted its {what} budget"),
-        })),
-    }
-}
+// ---------- governed session plumbing (shared in crate::governed) ----------
 
 fn extraction_objective() -> String {
     [
@@ -355,13 +267,13 @@ fn planning_objective() -> String {
 
 /// Handler for [`JobPayload::ExtractRequirements`].
 pub struct ExtractionHandler {
-    deps: PlannerDeps,
+    deps: SessionDeps,
     layout: WorkspaceLayout,
 }
 
 impl ExtractionHandler {
     /// Bind dependencies and workspace layout.
-    pub fn new(deps: PlannerDeps, layout: WorkspaceLayout) -> Self {
+    pub fn new(deps: SessionDeps, layout: WorkspaceLayout) -> Self {
         Self { deps, layout }
     }
 }
@@ -394,7 +306,7 @@ impl JobHandler for ExtractionHandler {
 
 async fn extract(
     db: &Db,
-    deps: &PlannerDeps,
+    deps: &SessionDeps,
     layout: &WorkspaceLayout,
     task_id: TaskId,
     run_id: WorkflowRunId,
@@ -419,9 +331,16 @@ async fn extract(
         UntrustedFact::new("task-description", task.description.clone()),
     ];
     let workspace = layout.run_repo_dir(run_id);
-    let final_text = run_planner(deps, workspace, &extraction_objective(), &facts).await?;
+    let final_text = run_role_session(
+        deps,
+        AgentRole::Planner,
+        workspace,
+        &extraction_objective(),
+        &facts,
+    )
+    .await?;
 
-    let doc: RequirementsDoc = parse_document(&final_text).map_err(StageError::Retryable)?;
+    let doc: RequirementsDoc = parse_strict(&final_text).map_err(StageError::Retryable)?;
     let requirements = map_requirements(task_id, doc).map_err(StageError::Retryable)?;
     db.replace_requirements(scope.organization_id, task_id, run_id, &requirements)
         .await
@@ -441,13 +360,13 @@ async fn extract(
 
 /// Handler for [`JobPayload::GeneratePlan`].
 pub struct PlanningHandler {
-    deps: PlannerDeps,
+    deps: SessionDeps,
     layout: WorkspaceLayout,
 }
 
 impl PlanningHandler {
     /// Bind dependencies and workspace layout.
-    pub fn new(deps: PlannerDeps, layout: WorkspaceLayout) -> Self {
+    pub fn new(deps: SessionDeps, layout: WorkspaceLayout) -> Self {
         Self { deps, layout }
     }
 }
@@ -480,7 +399,7 @@ impl JobHandler for PlanningHandler {
 
 async fn plan_stage(
     db: &Db,
-    deps: &PlannerDeps,
+    deps: &SessionDeps,
     layout: &WorkspaceLayout,
     task_id: TaskId,
     run_id: WorkflowRunId,
@@ -536,9 +455,16 @@ async fn plan_stage(
         })
         .collect();
     let workspace = layout.run_repo_dir(run_id);
-    let final_text = run_planner(deps, workspace, &planning_objective(), &facts).await?;
+    let final_text = run_role_session(
+        deps,
+        AgentRole::Planner,
+        workspace,
+        &planning_objective(),
+        &facts,
+    )
+    .await?;
 
-    let doc: PlanDocument = parse_document(&final_text).map_err(StageError::Retryable)?;
+    let doc: PlanDocument = parse_strict(&final_text).map_err(StageError::Retryable)?;
     let plan = build_plan(task_id, doc).map_err(StageError::Retryable)?;
     db.create_plan(scope.organization_id, task_id, run_id, &plan)
         .await
@@ -650,7 +576,7 @@ mod tests {
             "",
             "{\"requirements\":[{\"category\": \"platform\", \"kind\": \"explicit\",\n                 \"statement\": \"x\", \"source\": \"y\"}]}",
         ] {
-            let res: Result<RequirementsDoc> = parse_document(bad);
+            let res: Result<RequirementsDoc> = parse_strict(bad);
             assert!(res.is_err(), "must reject: {bad:?}");
         }
     }

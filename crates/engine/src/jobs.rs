@@ -9,7 +9,12 @@ use serde::{Deserialize, Serialize};
 use hephaestus_core::id::{ExecutionId, PlanId, StepId, TaskId, WorkflowRunId};
 
 /// Current payload schema version.
-pub const JOB_SCHEMA_VERSION: u32 = 1;
+///
+/// v2 adds the execution-phase payloads (`repair_execution`,
+/// `run_review`). v1 workers reject v2 envelopes loudly instead of
+/// guessing; v2 workers still decode v1 envelopes for rolling
+/// upgrades.
+pub const JOB_SCHEMA_VERSION: u32 = 2;
 
 /// Every queue name in the system.
 ///
@@ -26,6 +31,8 @@ pub enum Queue {
     Implementation,
     /// Deterministic verification layers.
     Verification,
+    /// Automated review of implemented changes.
+    Review,
     /// Build + artifact production.
     Build,
     /// Deployment and post-deployment verification.
@@ -40,6 +47,7 @@ impl Queue {
             Queue::Planning => "planning",
             Queue::Implementation => "implementation",
             Queue::Verification => "verification",
+            Queue::Review => "review",
             Queue::Build => "build",
             Queue::Deployment => "deployment",
         }
@@ -92,6 +100,23 @@ pub enum JobPayload {
         /// Driving run.
         run_id: WorkflowRunId,
     },
+    /// Send the workspace back to a governed implementer to repair
+    /// failures before verification or review runs again.
+    RepairExecution {
+        /// Owning execution attempt.
+        execution_id: ExecutionId,
+        /// Driving run.
+        run_id: WorkflowRunId,
+        /// What triggered the repair.
+        cause: RepairCause,
+    },
+    /// Run the automated reviewer over the current change set.
+    RunReview {
+        /// Owning execution attempt.
+        execution_id: ExecutionId,
+        /// Driving run.
+        run_id: WorkflowRunId,
+    },
     /// Build artifacts from verified sources.
     BuildArtifact {
         /// Owning task.
@@ -99,6 +124,17 @@ pub enum JobPayload {
         /// Driving run.
         run_id: WorkflowRunId,
     },
+}
+
+/// Why an execution entered a repair round. The repair session is
+/// framed differently depending on who found the problem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairCause {
+    /// Deterministic verification layers failed.
+    Verification,
+    /// The automated reviewer requested changes.
+    Review,
 }
 
 impl JobPayload {
@@ -109,8 +145,11 @@ impl JobPayload {
                 Queue::Analysis
             }
             JobPayload::GeneratePlan { .. } => Queue::Planning,
-            JobPayload::ExecuteStep { .. } => Queue::Implementation,
+            JobPayload::ExecuteStep { .. } | JobPayload::RepairExecution { .. } => {
+                Queue::Implementation
+            }
             JobPayload::RunVerification { .. } => Queue::Verification,
+            JobPayload::RunReview { .. } => Queue::Review,
             JobPayload::BuildArtifact { .. } => Queue::Build,
         }
     }
@@ -207,9 +246,21 @@ mod tests {
             .expect_err("missing version must fail");
         assert_eq!(err, DecodeError::MissingVersion);
 
-        let env = serde_json::json!({ "schema_version": 1 });
+        // Current version but no payload at all.
+        let env = serde_json::json!({ "schema_version": JOB_SCHEMA_VERSION });
         let err2 = JobPayload::from_envelope(&env).expect_err("missing payload");
         assert_eq!(err2, DecodeError::MissingPayload);
+
+        // A previous-version envelope is rejected loudly, not parsed.
+        let legacy = serde_json::json!({ "schema_version": 1 });
+        let err3 = JobPayload::from_envelope(&legacy).expect_err("legacy envelope");
+        assert!(matches!(
+            err3,
+            DecodeError::UnsupportedVersion {
+                supported: JOB_SCHEMA_VERSION,
+                ..
+            }
+        ));
     }
 
     #[test]

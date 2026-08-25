@@ -201,6 +201,17 @@ impl GitRepo {
         ])?;
         Ok(parse_log(&String::from_utf8_lossy(&out.stdout)))
     }
+
+    /// Unified diff of every tracked change in the working tree against
+    /// HEAD (staged and unstaged alike).
+    ///
+    /// Untracked files are invisible by design: reviewers see what
+    /// implementation CHANGED, never stray scratch files. The output is
+    /// repository data - untrusted content for downstream consumers.
+    pub fn worktree_diff(&self) -> Result<String> {
+        let out = self.run(&["diff", "--no-color", "HEAD", "--", "."])?;
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    }
 }
 
 /// Raw captured command result.
@@ -356,6 +367,40 @@ mod tests {
         let log = repo.log_path(Path::new("a.txt"), 10).expect("log");
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].subject, "initial");
+    }
+
+    #[test]
+    fn worktree_diff_shows_tracked_changes_only() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let repo = GitRepo::init(dir.path()).expect("init");
+
+        std::fs::write(dir.path().join("a.txt"), b"one\n").expect("write");
+        repo.run(&["add", "--", "a.txt"]).expect("add");
+        repo.run(&[
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@t.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "initial",
+        ])
+        .expect("commit");
+
+        // No changes yet: empty diff.
+        assert!(repo.worktree_diff().expect("diff").trim().is_empty());
+
+        // Modify a tracked file and add an untracked one.
+        std::fs::write(dir.path().join("a.txt"), b"one\nTWO\n").expect("modify");
+        std::fs::write(dir.path().join("scratch.tmp"), b"ignore me").expect("untracked");
+
+        let diff = repo.worktree_diff().expect("diff");
+        assert!(diff.contains("+TWO"), "modified file must appear: {diff}");
+        assert!(
+            !diff.contains("scratch"),
+            "untracked files must not leak into review diff"
+        );
     }
 
     #[test]
