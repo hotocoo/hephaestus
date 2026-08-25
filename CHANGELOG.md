@@ -66,3 +66,17 @@ until the 1.0 API contract freezes per ADR-011.
   (hard policy invariant) that approves over the working-tree diff
   and parks finished work at `awaiting_merge` pending human or CI
   merge.
+- Delivery pipeline (ADR-008): merge decisions recorded on the run's
+  durable `merge` approval gate with every application step
+  individually idempotent and replay-safe; build evidence rows
+  bootstrapped before the run advances, admitting exactly one live
+  build per run by partial unique index; deterministic
+  `cargo build --workspace` executed through the governed tool
+  runtime under Verifier capabilities with SHA-256 digests over the
+  executable artifacts recorded alongside workspace-relative paths;
+  typed `build_completed` events appended in the same transaction as
+  each terminal build status; runs whose plans demand no deployment
+  completing via the legal `skip_deployment` hop, while demanded
+  deployments fail the run terminally - honestly, with the successful
+  build preserved as evidence - until a real deployment executor
+  exists.

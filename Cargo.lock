@@ -584,8 +584,10 @@ dependencies = [
  "hephaestus-repo",
  "hephaestus-tools",
  "hephaestus-verify",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tempfile",
  "tokio",
@@ -593,6 +595,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "walkdir",
 ]
 
 [[package]]

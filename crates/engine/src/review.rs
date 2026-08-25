@@ -198,6 +198,12 @@ async fn review(
             )
             .await
             .map_err(StageError::Retryable)?;
+            // Open the merge gate the delivery phase will decide: the
+            // run is parked at awaiting_merge and humans or CI need a
+            // durable place to record acceptance (ADR-008).
+            db.open_merge_gate(scope.organization_id, scope.task_id, run_id)
+                .await
+                .map_err(StageError::Retryable)?;
             Ok(())
         }
         ReviewDecision::RequestChanges => {

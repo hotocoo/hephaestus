@@ -224,6 +224,28 @@ impl Db {
         .map_err(crate::map_sqlx)
     }
 
+    /// The most recent PASSED execution for a run, if any.
+    ///
+    /// The delivery phase anchors builds to the execution whose change
+    /// set was verified and reviewed; a run cannot reach the merge
+    /// gate without one.
+    pub async fn passed_execution_for_run(
+        &self,
+        org: OrganizationId,
+        run: WorkflowRunId,
+    ) -> Result<Option<ExecutionRow>> {
+        sqlx::query_as::<_, ExecutionRow>(
+            "SELECT e.id, e.task_id, e.run_id, e.plan_id, e.status
+             FROM executions e
+             WHERE e.run_id = $1 AND e.organization_id = $2 AND e.status = 'passed'
+             ORDER BY e.created_at DESC, e.id DESC LIMIT 1",
+        )
+        .bind(run.as_uuid())
+        .bind(org.as_uuid())
+        .fetch_optional(self.pool())
+        .await
+        .map_err(crate::map_sqlx)
+    }
     /// Fetch one execution; foreign or unknown ids are NotFound.
     pub async fn get_execution(
         &self,

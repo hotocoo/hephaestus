@@ -54,6 +54,7 @@ pub struct HandlerRegistry {
     repair_execution: Option<Arc<dyn JobHandler>>,
     run_verification: Option<Arc<dyn JobHandler>>,
     run_review: Option<Arc<dyn JobHandler>>,
+    build_artifact: Option<Arc<dyn JobHandler>>,
 }
 
 impl HandlerRegistry {
@@ -104,6 +105,12 @@ impl HandlerRegistry {
         self
     }
 
+    /// Register the build handler (delivery pipeline).
+    pub fn with_build_artifact(mut self, h: Arc<dyn JobHandler>) -> Self {
+        self.build_artifact = Some(h);
+        self
+    }
+
     fn route(&self, payload: &JobPayload) -> Option<Arc<dyn JobHandler>> {
         match payload {
             JobPayload::AnalyzeRepository { .. } => self.analyze.clone(),
@@ -113,10 +120,7 @@ impl HandlerRegistry {
             JobPayload::RepairExecution { .. } => self.repair_execution.clone(),
             JobPayload::RunVerification { .. } => self.run_verification.clone(),
             JobPayload::RunReview { .. } => self.run_review.clone(),
-            // Build/deployment handlers land with their phases; route
-            // misses fail the job permanently so unregistered kinds are
-            // visible to operators.
-            _ => None,
+            JobPayload::BuildArtifact { .. } => self.build_artifact.clone(),
         }
     }
 }
@@ -146,6 +150,7 @@ impl Default for WorkerConfig {
                 "implementation".into(),
                 "verification".into(),
                 "review".into(),
+                "build".into(),
             ],
             lease_ttl_secs: 300,
             poll_interval: Duration::from_millis(500),

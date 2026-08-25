@@ -9,6 +9,7 @@
 
 pub mod analysis;
 pub mod approval;
+pub mod delivery;
 pub mod execution;
 pub mod governed;
 pub mod intake;
@@ -20,6 +21,9 @@ pub mod worker;
 
 pub use analysis::{AnalysisHandler, StageError, WorkspaceLayout};
 pub use approval::{ApprovalDecisionInput, ApprovalOutcome, ApprovalService};
+pub use delivery::{
+    ARTIFACT_DIR, BUILD_COMMAND, BuildHandler, MergeDecisionInput, MergeOutcome, MergeService,
+};
 pub use execution::{
     ExecutionHandler, ImplementationDocument, MAX_FIX_ROUNDS, RepairHandler, StepOutcomeDocument,
 };
@@ -32,4 +36,4 @@ pub use verification::{
     RunVerificationHandler, SUPPORTED_LAYERS, VerificationLayerError, default_layer_plan,
     layer_spec_for,
 };
-pub use worker::{HandlerRegistry, Worker, WorkerConfig};
+pub use worker::{HandlerOutcome, HandlerRegistry, Worker, WorkerConfig};

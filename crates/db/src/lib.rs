@@ -11,6 +11,7 @@
 //!   enforced by unique indexes, not by check-then-insert races.
 
 pub mod audit;
+pub mod delivery;
 pub mod events;
 pub mod execution;
 pub mod intake;

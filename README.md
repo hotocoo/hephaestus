@@ -54,6 +54,13 @@ Currently working end-to-end:
   evidence, bounded fix/review loops owned by the execution layer
   (ADR-007), and a read-only automated review gate that parks
   finished work at `awaiting_merge`
+* Delivery pipeline (ADR-008): externally made merge decisions
+  recorded on a durable approval gate with full crash-replay
+  recovery, deterministic builds of the frozen change set through the
+  governed tool runtime with SHA-256 artifact evidence, runs whose
+  plans demand no deployment completing via `skip_deployment`, and
+  demanded-but-impossible deployments failing loudly instead of being
+  simulated
 
 ## Architecture (in progress)
 
