@@ -177,6 +177,9 @@ async fn run_verification(
 
     // Implementing -> Verifying. Redeliveries already in Verifying
     // proceed: suites are deterministic and evidence is append-only.
+    // A run already in Reviewing means an earlier delivery finished
+    // the suite and nominated review - there is nothing left to
+    // record, and re-running would duplicate durable evidence rows.
     if scope.state == WorkflowState::Implementing {
         db.transition_run(
             scope.organization_id,
@@ -187,10 +190,12 @@ async fn run_verification(
         )
         .await
         .map_err(StageError::Retryable)?;
+    } else if scope.state == WorkflowState::Reviewing {
+        return Ok(()); // stale redelivery after the pass transition
     } else if scope.state != WorkflowState::Verifying {
         return Err(StageError::Permanent(Error::Conflict {
             message: format!(
-                "run is {}, not implementing or verifying",
+                "run is {}, not implementing, verifying, or reviewing",
                 scope.state.name()
             ),
         }));
@@ -235,6 +240,21 @@ async fn run_verification(
     .map_err(StageError::Permanent)?;
 
     if passed {
+        // Verifying -> Reviewing BEFORE nominating review. The review
+        // handler refuses every ingress state but Reviewing, and the
+        // state machine - not this handler - owns the hop; skipping it
+        // would strand a passed suite one state short of reviewable.
+        // The redelivery that arrives after this move is absorbed by
+        // the guard above, so the CAS here always sees Verifying.
+        db.transition_run(
+            scope.organization_id,
+            run_id,
+            WorkflowState::Verifying,
+            TransitionEvent::VerificationPassed,
+            "verification-handler",
+        )
+        .await
+        .map_err(StageError::Retryable)?;
         // Review decides the next hop; verification only nominates.
         // The key carries the suite cycle so later rounds after a
         // repair are not swallowed by this round's idempotent job.
