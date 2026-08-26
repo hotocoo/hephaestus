@@ -93,6 +93,14 @@ Currently working end-to-end:
   command runs; one durable job drives deploy-then-verify with
   crash-replay at every step, evidence rows under a one-live-row-per-run
   index, and typed outcome events appended transactionally
+* Production serving and telemetry (ADR-014): one shared telemetry
+  path that turns `telemetry.otlp_endpoint` into real OTLP/HTTP span
+  export (verified against a live collector) instead of a dead knob;
+  SIGTERM drains exactly like Ctrl-C so process managers get graceful
+  restarts; an optional `[web]` section serves the built dashboard
+  next to the API with its runtime credentials injected at boot -
+  same-origin by default, /api contract untouched - and a bounded
+  request timeout keeps hung handlers from pinning workers
 
 ## Architecture (in progress)
 
@@ -184,6 +192,13 @@ Configuration precedence: built-in defaults -> TOML file -> environment
 Invalid configuration refuses to start the process; production mode
 additionally rejects unsafe settings (auth disabled, sandbox network
 egress enabled, localhost database).
+
+### Operations
+
+Taking a deployment live - database provisioning, configuration file,
+systemd/launchd units, health verification and an end-to-end smoke
+task - is documented step by step in the [production
+runbook](docs/RUNBOOK.md).
 
 ## Security
 

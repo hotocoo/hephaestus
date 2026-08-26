@@ -44,6 +44,9 @@ pub struct Config {
     /// Deployment targets (ADR-013). Empty means no executor exists and
     /// runs demanding deployment fail loudly, exactly as before.
     pub deployment: DeploymentConfig,
+    /// Dashboard serving settings (ADR-014). Unconfigured means the
+    /// server exposes only the API, exactly as before.
+    pub web: WebConfig,
     /// Environment name: development | test | staging | production.
     pub environment: Environment,
 }
@@ -60,6 +63,7 @@ impl Default for Config {
             model: ModelConfig::default(),
             worker: WorkerSettings::default(),
             deployment: DeploymentConfig::default(),
+            web: WebConfig::default(),
             environment: Environment::Development,
         }
     }
@@ -98,6 +102,72 @@ pub struct ServerConfig {
     pub workers: usize,
     /// Global request body size limit in bytes.
     pub max_body_bytes: usize,
+    /// Wall-clock cap for one request, in seconds (ADR-014): hung
+    /// handlers release their worker instead of pinning it.
+    pub request_timeout_secs: u64,
+}
+
+/// Inclusive bounds for server.request_timeout_secs.
+pub const REQUEST_TIMEOUT_RANGE: std::ops::RangeInclusive<u64> = 1..=600;
+
+/// Dashboard serving settings ([web], ADR-014).
+///
+/// Unconfigured (dist_dir absent), the API binary serves no files and
+/// behaves exactly as earlier ADRs specified. Configured, it also
+/// serves the built dashboard from disk so one process fronts both the
+/// control plane and its human surface, same-origin by default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct WebConfig {
+    /// Directory holding the built dashboard (its index.html plus
+    /// assets). Absent disables static serving entirely.
+    pub dist_dir: Option<PathBuf>,
+    /// Runtime configuration injected into the served index.html;
+    /// absent leaves the bundle's fail-closed placeholder untouched
+    /// (the dashboard renders its setup screen without a token).
+    pub runtime_config: Option<WebRuntimeConfig>,
+}
+
+/// Values injected into the dashboard's bootstrap global.
+///
+/// The token is a bearer secret: redacted from Debug output, and
+/// serialized configuration must never be logged - mirroring ApiKey
+/// handling.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct WebRuntimeConfig {
+    /// Control-plane base URL without trailing slash. Empty means
+    /// same-origin (the default when hephaestus-server serves the
+    /// dashboard itself).
+    pub base_url: String,
+    /// Pre-provisioned API key handed to the dashboard. Empty keeps
+    /// the app on its setup screen (fail closed).
+    pub token: String,
+    /// Live-view polling interval in seconds.
+    pub poll_seconds: u64,
+}
+
+impl Default for WebRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            token: String::new(),
+            // Mirrors the dashboard's own default polling interval so
+            // an operator who sets only the token gets documented
+            // behavior, not an accidental 0-second hot loop.
+            poll_seconds: 10,
+        }
+    }
+}
+
+impl fmt::Debug for WebRuntimeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebRuntimeConfig")
+            .field("base_url", &self.base_url)
+            .field("token", &"[redacted]")
+            .field("poll_seconds", &self.poll_seconds)
+            .finish()
+    }
 }
 
 impl Default for ServerConfig {
@@ -107,6 +177,7 @@ impl Default for ServerConfig {
             port: 7300,
             workers: 0,
             max_body_bytes: 8 * 1024 * 1024,
+            request_timeout_secs: 30,
         }
     }
 }
@@ -475,6 +546,9 @@ impl Config {
             if let Some(v) = server.max_body_bytes {
                 self.server.max_body_bytes = v;
             }
+            if let Some(v) = server.request_timeout_secs {
+                self.server.request_timeout_secs = v;
+            }
         }
         if let Some(db) = f.database {
             if let Some(v) = db.url {
@@ -584,6 +658,26 @@ impl Config {
                 })
                 .collect();
         }
+        if let Some(w) = f.web {
+            if let Some(v) = w.dist_dir {
+                self.web.dist_dir = Some(PathBuf::from(v));
+            }
+            if let Some(rc) = w.runtime_config {
+                let target = self
+                    .web
+                    .runtime_config
+                    .get_or_insert_with(WebRuntimeConfig::default);
+                if let Some(v) = rc.base_url {
+                    target.base_url = v;
+                }
+                if let Some(v) = rc.token {
+                    target.token = v;
+                }
+                if let Some(v) = rc.poll_seconds {
+                    target.poll_seconds = v;
+                }
+            }
+        }
         if let Some(e) = f.environment {
             self.environment = e;
         }
@@ -612,6 +706,20 @@ impl Config {
         }
         if let Some(v) = env("HEPHAESTUS_LOG_LEVEL") {
             self.telemetry.log_level = v;
+        }
+        if let Some(v) = env("HEPHAESTUS_REQUEST_TIMEOUT_SECS") {
+            self.server.request_timeout_secs = parse_u64_env("HEPHAESTUS_REQUEST_TIMEOUT_SECS", &v);
+        }
+        if let Some(v) = env("HEPHAESTUS_WEB_DIST_DIR") {
+            self.web.dist_dir = Some(PathBuf::from(v));
+        }
+        if let Some(v) = env("HEPHAESTUS_WEB_TOKEN")
+            && !v.is_empty()
+        {
+            self.web
+                .runtime_config
+                .get_or_insert_with(WebRuntimeConfig::default)
+                .token = v;
         }
         if let Some(v) = env("HEPHAESTUS_AUTH_KEYS") {
             self.auth.keys = parse_keys_env(&v);
@@ -660,6 +768,13 @@ impl Config {
             return Err(hephaestus_core::Error::Config(
                 "server.bind_addr must not be empty".into(),
             ));
+        }
+        if !REQUEST_TIMEOUT_RANGE.contains(&self.server.request_timeout_secs) {
+            return Err(hephaestus_core::Error::Config(format!(
+                "server.request_timeout_secs must be within {}..={}",
+                REQUEST_TIMEOUT_RANGE.start(),
+                REQUEST_TIMEOUT_RANGE.end()
+            )));
         }
         // API keys must be attributable, non-trivial and unique; tokens
         // double as bearer secrets so short values would be guessable.
@@ -882,6 +997,12 @@ fn parse_port(v: &str) -> u16 {
         .unwrap_or_else(|_| fatal_config("HEPHAESTUS_PORT", v))
 }
 
+/// Parse a numeric environment override; malformed input aborts before
+/// any state exists (fail closed), matching HEPHAESTUS_PORT behavior.
+fn parse_u64_env(name: &str, v: &str) -> u64 {
+    v.parse().unwrap_or_else(|_| fatal_config(name, v))
+}
+
 /// Parse the HEPHAESTUS_AUTH_KEYS environment override.
 ///
 /// Format: semicolon-separated entries of comma-separated fields,
@@ -927,7 +1048,23 @@ struct ConfigFile {
     model: Option<FileModel>,
     worker: Option<FileWorker>,
     deployment: Option<FileDeployment>,
+    web: Option<FileWeb>,
     environment: Option<Environment>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct FileWeb {
+    dist_dir: Option<String>,
+    runtime_config: Option<FileWebRuntimeConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct FileWebRuntimeConfig {
+    base_url: Option<String>,
+    token: Option<String>,
+    poll_seconds: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -937,6 +1074,7 @@ struct FileServer {
     port: Option<u16>,
     workers: Option<usize>,
     max_body_bytes: Option<usize>,
+    request_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1486,5 +1624,83 @@ mod tests {
             panic!("production without model key must fail validation");
         };
         assert!(err.to_string().contains("model.api_key"), "got: {err}");
+    }
+
+    #[test]
+    fn web_section_parses_from_file() {
+        let (_dir, path) = write_tmp(
+            "[web]\ndist_dir = \"site\"\n[web.runtime_config]\nbase_url = \"\"\ntoken = \"dash-token-1\"\npoll_seconds = 5\n",
+        );
+        let cfg = Config::load(Some(&path), no_env).expect("valid web config");
+        assert_eq!(
+            cfg.web.dist_dir.as_deref(),
+            Some(std::path::Path::new("site"))
+        );
+        let rc = cfg.web.runtime_config.as_ref().expect("runtime config");
+        assert_eq!(rc.token, "dash-token-1");
+        assert_eq!(rc.poll_seconds, 5);
+        assert_eq!(rc.base_url, "");
+    }
+
+    #[test]
+    fn request_timeout_bounds_rejected() {
+        let (_dir, path) = write_tmp("[server]\nrequest_timeout_secs = 0\n");
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert!(
+            err.to_string().contains("request_timeout_secs"),
+            "got: {err}"
+        );
+
+        let (_dir, path) = write_tmp("[server]\nrequest_timeout_secs = 601\n");
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert!(
+            err.to_string().contains("request_timeout_secs"),
+            "got: {err}"
+        );
+
+        let (_dir, path) = write_tmp("[server]\nrequest_timeout_secs = 600\n");
+        Config::load(Some(&path), no_env).expect("600 is the inclusive bound");
+    }
+
+    #[test]
+    fn web_token_env_creates_runtime_config() {
+        let env = |name: &str| match name {
+            "HEPHAESTUS_WEB_TOKEN" => Some("env-token-16".to_string()),
+            _ => None,
+        };
+        let cfg = Config::load(None, env).expect("valid");
+        let rc = cfg
+            .web
+            .runtime_config
+            .as_ref()
+            .expect("runtime config from env");
+        assert_eq!(rc.token, "env-token-16");
+        // Unspecified companions keep their fail-closed defaults.
+        assert_eq!(rc.base_url, "");
+        assert_eq!(rc.poll_seconds, 10);
+        assert!(cfg.web.dist_dir.is_none());
+    }
+
+    #[test]
+    fn web_runtime_debug_redacts_token() {
+        let rc = WebRuntimeConfig {
+            base_url: String::new(),
+            token: "super-secret-token".into(),
+            poll_seconds: 10,
+        };
+        let rendered = format!("{rc:?}");
+        assert!(
+            !rendered.contains("super-secret-token"),
+            "leaked: {rendered}"
+        );
+        assert!(rendered.contains("[redacted]"), "got: {rendered}");
+    }
+
+    #[test]
+    fn default_web_config_serves_nothing() {
+        let cfg = Config::default();
+        assert!(cfg.web.dist_dir.is_none());
+        assert!(cfg.web.runtime_config.is_none());
+        assert_eq!(cfg.server.request_timeout_secs, 30);
     }
 }

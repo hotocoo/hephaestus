@@ -1,6 +1,7 @@
 //! Shared handler state.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use hephaestus_db::Db;
 use hephaestus_engine::approval::ApprovalService;
@@ -8,6 +9,10 @@ use hephaestus_engine::delivery::MergeService;
 use hephaestus_engine::intake::IntakeService;
 
 use crate::auth::AuthPolicy;
+use crate::web_static::WebSite;
+
+/// Wall-clock default for one request when configuration stays silent.
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// State shared by every route.
 #[derive(Clone)]
@@ -24,6 +29,10 @@ pub struct AppState {
     pub auth: Arc<AuthPolicy>,
     /// Request body size limit from configuration.
     pub max_body_bytes: usize,
+    /// Request wall-clock cap from configuration (ADR-014).
+    pub request_timeout_secs: u64,
+    /// Loaded dashboard site; None serves API-only responses.
+    pub web_site: Option<Arc<WebSite>>,
 }
 
 impl AppState {
@@ -40,7 +49,26 @@ impl AppState {
             merges: MergeService,
             auth: Arc::new(auth),
             max_body_bytes,
+            request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
+            web_site: None,
             db,
         }
+    }
+
+    /// Set the request wall-clock cap (seconds) from configuration.
+    pub fn with_request_timeout(mut self, secs: u64) -> Self {
+        self.request_timeout_secs = secs;
+        self
+    }
+
+    /// Attach a loaded dashboard for static serving (ADR-014).
+    pub fn with_web_site(mut self, site: WebSite) -> Self {
+        self.web_site = Some(Arc::new(site));
+        self
+    }
+
+    /// The configured request timeout as a duration.
+    pub fn request_timeout(&self) -> Duration {
+        Duration::from_secs(self.request_timeout_secs)
     }
 }

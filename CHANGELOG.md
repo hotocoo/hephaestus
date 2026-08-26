@@ -8,6 +8,21 @@ until the 1.0 API contract freezes (its own ADR, to come).
 
 ### Added
 
+- Production serving and telemetry (ADR-014): a shared
+  `hephaestus-telemetry` path installs structured logging everywhere
+  and, when `telemetry.otlp_endpoint` is configured, exports spans
+  over OTLP/HTTP protobuf under the configured service name - proven
+  by an integration test that ships a span to an in-process collector.
+  Both binaries now drain on SIGTERM exactly as on Ctrl-C, so process
+  managers get graceful restarts. An optional `[web]` configuration
+  section serves the built dashboard from hephaestus-server itself:
+  hashed assets cache immutably, unknown non-API paths fall back to
+  the SPA entry whose bootstrap placeholder is replaced at startup
+  with injected runtime credentials (a bundle without the placeholder
+  fails startup loudly), and every /api response keeps its exact JSON
+  contract. A bounded `server.request_timeout_secs` (default 30,
+  range 1..=600) applies a request timeout across the router.
+
 - Deployment pipeline (ADR-013): configured deployment targets
   (`[[deployment.targets]]` in TOML - named argv command plus mandatory
   post-deployment verification hooks and a bounded timeout), executed

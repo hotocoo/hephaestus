@@ -30,6 +30,7 @@ use hephaestus_engine::{
     DeploymentTargetSpec, ExecutionHandler, ExtractionHandler, PlanningHandler, RepairHandler,
     ReviewHandler, RunVerificationHandler, SessionDeps, WorkspaceLayout,
 };
+use hephaestus_telemetry::{init as init_telemetry, shutdown_signal};
 
 fn main() {
     // Config failures must print cleanly even before telemetry exists.
@@ -78,25 +79,27 @@ fn deployment_settings(cfg: &Config) -> hephaestus_core::Result<DeploymentSettin
 fn run() -> hephaestus_core::Result<()> {
     let cfg = Config::load(config_path().as_deref(), env_var)?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(
-            cfg.telemetry.log_level.clone(),
-        ))
-        .init();
-    tracing::info!(
-        environment = ?cfg.environment,
-        database = %cfg.database.redacted_url(),
-        "configuration loaded"
-    );
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| Error::Storage(Box::new(e)))?;
 
     runtime.block_on(async move {
+        // Telemetry initializes as the first step inside the runtime,
+        // before any component logs (ADR-014); its exporter runs on the
+        // SDK's own background thread.
+        let telemetry = init_telemetry(&cfg.telemetry)?;
+        tracing::info!(
+            environment = ?cfg.environment,
+            database = %cfg.database.redacted_url(),
+            "configuration loaded"
+        );
+
         let db = Db::connect_with_max(&cfg.database.url, cfg.database.max_connections).await?;
-        serve_jobs(db, &cfg).await
+        let result = serve_jobs(db, &cfg).await;
+        // Flush batched spans before exit (no-op without OTLP export).
+        telemetry.shutdown();
+        result
     })
 }
 
@@ -199,7 +202,9 @@ async fn serve_jobs(db: Db, cfg: &Config) -> hephaestus_core::Result<()> {
     {
         let shutdown = shutdown.clone();
         tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
+            // Ctrl-C and SIGTERM drain identically (ADR-014): process
+            // managers stop workers with SIGTERM, never Ctrl-C.
+            shutdown_signal().await;
             tracing::warn!("shutdown signal received; draining jobs");
             shutdown.cancel();
         });

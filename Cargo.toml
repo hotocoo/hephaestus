@@ -42,7 +42,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 # http / api
 axum = { version = "0.8", features = ["http2", "json"] }
 tower = { version = "0.5", features = ["util", "timeout", "load-shed", "limit"] }
-tower-http = { version = "0.6", features = ["trace", "compression-gzip", "cors", "request-id", "limit"] }
+tower-http = { version = "0.6", features = ["trace", "compression-gzip", "cors", "request-id", "limit", "timeout"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # cli
@@ -53,7 +53,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 opentelemetry = "0.30"
 opentelemetry_sdk = { version = "0.30", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.30", default-features = false, features = ["http-proto", "internal-logs"] }
+opentelemetry-otlp = { version = "0.30", default-features = false, features = ["http-proto", "reqwest-blocking-client", "internal-logs"] }
+tracing-opentelemetry = "0.31"
 
 # config
 toml = "0.9"

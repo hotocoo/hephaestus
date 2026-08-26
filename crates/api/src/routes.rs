@@ -7,7 +7,7 @@
 //! idempotency and audit guarantees hold verbatim over HTTP.
 
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -20,6 +20,7 @@ use hephaestus_core::id::{OrganizationId, ProjectId, RepositoryId, TaskId, Workf
 use hephaestus_engine::approval::ApprovalDecisionInput;
 use hephaestus_engine::delivery::MergeDecisionInput;
 use serde::Deserialize;
+use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
 use crate::auth::auth_middleware;
@@ -63,15 +64,45 @@ pub fn router(state: AppState) -> Router {
         .route("/openapi.json", get(crate::openapi::serve_document))
         .with_state(state.clone());
 
-    let probes = Router::new()
+    let mut probes = Router::new()
         .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .with_state(state.clone());
+        .route("/readyz", get(readyz));
+    if state.web_site.is_some() {
+        // With dashboard serving enabled the SPA entry answers GET /
+        // exactly like every other client-side route does.
+        probes = probes.route("/", get(serve_web_entry));
+    }
 
     probes
         .nest("/api/v1", contract.merge(protected))
-        .fallback(not_found)
+        .fallback(web_or_not_found)
         .layer(DefaultBodyLimit::max(state.max_body_bytes))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            state.request_timeout(),
+        ))
+        .with_state(state)
+}
+
+/// Unknown paths: static SPA fallback when dashboard serving is on,
+/// the shared JSON error shape otherwise - /api keeps its contract.
+async fn web_or_not_found(State(state): State<AppState>, method: Method, uri: Uri) -> Response {
+    let Some(site) = state.web_site.as_ref() else {
+        return ApiError(Error::NotFound { entity: "route" }).into_response();
+    };
+    let path = uri.path();
+    if path == "/api" || path.starts_with("/api/") {
+        return ApiError(Error::NotFound { entity: "route" }).into_response();
+    }
+    site.respond(&method, path).await
+}
+
+/// The dashboard entry point at its canonical root.
+async fn serve_web_entry(State(state): State<AppState>, method: Method) -> Response {
+    match state.web_site.as_ref() {
+        Some(site) => site.respond(&method, "/").await,
+        None => ApiError(Error::NotFound { entity: "route" }).into_response(),
+    }
 }
 
 /// Liveness: the process is up. No auth, no dependencies.
@@ -97,11 +128,6 @@ async fn readyz(State(state): State<AppState>) -> Response {
                 .into_response()
         }
     }
-}
-
-/// Unknown routes render in the shared error shape.
-async fn not_found() -> ApiError {
-    ApiError(Error::NotFound { entity: "route" })
 }
 
 /// Parse a path segment into a typed identifier.

@@ -23,6 +23,7 @@ secrets/
 *.sqlite
 /data/
 /.forge/
+/.live/
 
 # Python fixtures
 __pycache__/

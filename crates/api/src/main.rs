@@ -1,16 +1,19 @@
-//! The `hephaestus-server` binary.
+//! The hephaestus-server binary.
 //!
-//! Loads layered configuration, initializes telemetry, applies
-//! versioned migrations on the configured database, and serves the
-//! HTTP API until shutdown is requested. Job processing stays with
-//! workers (ADR-009); this process holds no model-provider secrets.
+//! Loads layered configuration, initializes telemetry (local logging
+//! always, OTLP export when configured - ADR-014), optionally mounts
+//! the built dashboard from disk, applies versioned migrations on the
+//! configured database, and serves the HTTP API until Ctrl-C or
+//! SIGTERM requests shutdown. Job processing stays with workers
+//! (ADR-009); this process holds no model-provider secrets.
 
 use std::path::PathBuf;
 
-use hephaestus_api::{AppState, AuthPolicy, router};
+use hephaestus_api::{AppState, AuthPolicy, WebSite, router};
 use hephaestus_config::Config;
 use hephaestus_core::Error;
 use hephaestus_db::Db;
+use hephaestus_telemetry::{init as init_telemetry, shutdown_signal};
 
 fn main() {
     // Config failures must print cleanly even before telemetry exists.
@@ -18,7 +21,6 @@ fn main() {
         Ok(()) => {}
         Err(err) => {
             eprintln!("fatal: {err}");
-            tracing::error!(error = %err, "server terminated");
             std::process::exit(1);
         }
     }
@@ -40,17 +42,6 @@ fn env_var(name: &str) -> Option<String> {
 fn run() -> hephaestus_core::Result<()> {
     let cfg = Config::load(config_path().as_deref(), env_var)?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(
-            cfg.telemetry.log_level.clone(),
-        ))
-        .init();
-    tracing::info!(
-        environment = ?cfg.environment,
-        database = %cfg.database.redacted_url(),
-        "configuration loaded"
-    );
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(if cfg.server.workers == 0 {
@@ -63,13 +54,36 @@ fn run() -> hephaestus_core::Result<()> {
         .build()
         .map_err(|e| Error::Storage(Box::new(e)))?;
 
+    // Telemetry initializes as the first step inside the runtime,
+    // before any component logs (ADR-014); its exporter runs on the
+    // SDK's own background thread.
     runtime.block_on(async move {
+        let telemetry = init_telemetry(&cfg.telemetry)?;
+        tracing::info!(
+            environment = ?cfg.environment,
+            database = %cfg.database.redacted_url(),
+            web_serving = cfg.web.dist_dir.is_some(),
+            "configuration loaded"
+        );
+
         let db = Db::connect(&cfg.database.url).await?;
         db.migrate().await?;
         tracing::info!("migrations applied");
 
-        let auth = AuthPolicy::new(cfg.auth.disabled, &cfg.auth.keys);
-        let state = AppState::new(db, auth, cfg.server.max_body_bytes);
+        // Load the dashboard before binding: a broken bundle is a
+        // startup failure, not a first-request surprise.
+        let mut state = AppState::new(
+            db.clone(),
+            AuthPolicy::new(cfg.auth.disabled, &cfg.auth.keys),
+            cfg.server.max_body_bytes,
+        )
+        .with_request_timeout(cfg.server.request_timeout_secs);
+        if let Some(dist_dir) = cfg.web.dist_dir.clone() {
+            let site = WebSite::load(&dist_dir, cfg.web.runtime_config.as_ref())?;
+            tracing::info!(dir = %dist_dir.display(), "serving dashboard");
+            state = state.with_web_site(site);
+        }
+
         let app = router(state);
 
         let addr = format!("{}:{}", cfg.server.bind_addr, cfg.server.port);
@@ -77,15 +91,12 @@ fn run() -> hephaestus_core::Result<()> {
             .await
             .map_err(|e| Error::Storage(Box::new(e)))?;
         tracing::info!(%addr, "serving");
-        axum::serve(listener, app)
+        let served = axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal())
             .await
-            .map_err(|e| Error::Storage(Box::new(e)))
+            .map_err(|e| Error::Storage(Box::new(e)));
+        // Flush batched spans before exit (no-op without OTLP export).
+        telemetry.shutdown();
+        served
     })
-}
-
-/// Resolve when the operator asks the process to stop.
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::warn!("shutdown signal received; draining connections");
 }

@@ -21,8 +21,10 @@ pub mod error;
 pub mod openapi;
 pub mod routes;
 pub mod state;
+pub mod web_static;
 
 pub use auth::{AuthPolicy, Principal};
 pub use error::{ApiError, ApiResult};
 pub use routes::router;
 pub use state::AppState;
+pub use web_static::WebSite;

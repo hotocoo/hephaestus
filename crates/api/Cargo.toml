@@ -13,6 +13,7 @@ hephaestus-core = { path = "../core" }
 hephaestus-config = { path = "../config" }
 hephaestus-db = { path = "../db" }
 hephaestus-engine = { path = "../engine" }
+hephaestus-telemetry = { path = "../telemetry" }
 
 axum = { workspace = true }
 tower = { workspace = true }
@@ -32,6 +33,7 @@ path = "src/main.rs"
 [dev-dependencies]
 sqlx = { workspace = true }
 http-body-util = "0.1"
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
