@@ -178,7 +178,7 @@ async fn analyze(
 
     chain_job(
         db,
-        Queue::Analysis.as_str(),
+        Queue::Planning.as_str(),
         "extract-requirements",
         run_id,
         JobPayload::ExtractRequirements { task_id, run_id },

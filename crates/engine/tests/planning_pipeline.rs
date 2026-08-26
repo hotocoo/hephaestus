@@ -301,7 +301,10 @@ async fn pipeline_reaches_approval_gate_end_to_end() {
     assert!(types.iter().any(|t| t == "plan_generated"));
 
     // Queue accounting scoped to this run: workers share queues across
-    // concurrent tests, so never count the whole table.
+    // concurrent tests, so never count the whole table. Analysis owns
+    // one done job; planning owns extraction and plan generation - the
+    // extraction job rides planning since the ADR-014 verification pass
+    // fixed its misrouting onto 'analysis'.
     let run_str = receipt.run_id.to_string();
     let analysis_done: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM jobs WHERE queue='analysis' AND status='done'
@@ -311,7 +314,7 @@ async fn pipeline_reaches_approval_gate_end_to_end() {
     .fetch_one(db.pool())
     .await
     .expect("count");
-    assert_eq!(analysis_done.0, 2);
+    assert_eq!(analysis_done.0, 1);
     let planning_done: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM jobs WHERE queue='planning' AND status='done'
          AND payload->'payload'->'data'->>'run_id' = $1",
@@ -320,7 +323,7 @@ async fn pipeline_reaches_approval_gate_end_to_end() {
     .fetch_one(db.pool())
     .await
     .expect("count");
-    assert_eq!(planning_done.0, 1);
+    assert_eq!(planning_done.0, 2);
 }
 
 /// Fresh task+run pair without going through intake (handlers under
@@ -526,3 +529,79 @@ async fn extraction_uses_tools_audited_and_chains_plan_job() {
     .expect("chained");
     assert_eq!(chained.0, 1);
 }
+
+/// A deterministic-only worker (analysis queue only) must finish
+/// analysis and chain requirement extraction into the PLANNING queue.
+/// Regression: the chain used to enqueue extraction onto 'analysis',
+/// where model-capable workers would never see it and analysis-only
+/// workers would claim it with no handler - found during live
+/// verification of ADR-014, where a real run stalled in 'analyzing'.
+#[tokio::test(flavor = "multi_thread")]
+async fn analysis_chains_extraction_into_planning_queue() {
+    let origin = tempfile::tempdir().expect("origin dir");
+    let git = GitRepo::init(origin.path()).expect("init");
+    std::fs::write(origin.path().join("README.md"), "# Sample\nupload docs\n")
+        .expect("seed file");
+    git.commit_all("initial", ("tester", "tester@example.invalid"))
+        .expect("commit");
+
+    let storage = tempfile::tempdir().expect("storage dir");
+    let db = test_db().await;
+    let (org, proj, repo_id) =
+        seed_with_local_repo(&db, origin.path().to_str().expect("utf8")).await;
+    let receipt = IntakeService::new(db.clone())
+        .submit(&request(org, proj, repo_id))
+        .await
+        .expect("intake");
+
+    let layout = WorkspaceLayout::new(storage.path());
+    let registry = HandlerRegistry::new()
+        .with_analyze(Arc::new(AnalysisHandler::new(layout.clone())));
+
+    // ONLY the analysis queue: exactly what a deterministic worker
+    // without model credentials serves (ADR-010).
+    let config = WorkerConfig {
+        id: format!("det-{}", org.as_uuid().simple()),
+        queues: vec!["analysis".to_string()],
+        lease_ttl_secs: 30,
+        poll_interval: std::time::Duration::from_millis(20),
+        concurrency: 1,
+    };
+    let worker = Arc::new(Worker::new(db.clone(), registry, config));
+    let shutdown = CancellationToken::new();
+    let w = Arc::clone(&worker);
+    let shutdown_for_task = shutdown.clone();
+    tokio::spawn(async move { w.run(shutdown_for_task).await });
+
+    let run = receipt.run_id.to_string();
+    let key = format!("extract-requirements:{run}");
+    // Wait until the chained job shows up on the planning queue...
+    let mut planned = false;
+    for _ in 0..400 {
+        let pending: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM jobs WHERE queue='planning' AND idempotency_key=$1",
+        )
+        .bind(&key)
+        .fetch_one(db.pool())
+        .await
+        .expect("planning count");
+        if pending.0 > 0 {
+            planned = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    shutdown.cancel();
+    assert!(planned, "extraction job must be chained onto 'planning'");
+
+    // ...and nothing extract-shaped may ride the analysis queue.
+    let poisoned: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM jobs WHERE queue='analysis' AND idempotency_key=$1",
+    )
+    .bind(&key)
+    .fetch_one(db.pool())
+    .await
+    .expect("poisoned count");
+    assert_eq!(poisoned.0, 0, "no extraction jobs may be enqueued on analysis");
+}
+

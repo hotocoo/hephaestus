@@ -6,6 +6,17 @@ until the 1.0 API contract freezes (its own ADR, to come).
 
 ## [Unreleased]
 
+### Fixed
+
+- Queue routing: requirement-extraction jobs were chained onto the
+  `analysis` queue instead of `planning`. Model-capable workers
+  (the only ones holding an extraction handler) poll `planning` and
+  never saw them, while analysis-only workers claimed them with no
+  handler and retried forever - a run stalled in `analyzing`
+  indefinitely. Found during live end-to-end verification of ADR-014;
+  pinned by a regression test that serves exactly one queue and asserts
+  where the chain lands.
+
 ### Added
 
 - Production serving and telemetry (ADR-014): a shared

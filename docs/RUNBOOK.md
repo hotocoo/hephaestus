@@ -123,8 +123,8 @@ SIGTERM on stop is launchd's default.
 ## 5. Verify the deployment
 
 ```bash
-curl -fsS http://host:7300/api/v1/healthz      # {"status":"ok"}
-curl -fsS http://host:7300/api/v1/readyz       # {"status":"ready"} = DB pinged
+curl -fsS http://host:7300/healthz            # {"status":"ok"}
+curl -fsS http://host:7300/readyz             # {"status":"ready"} = DB pinged
 curl -fsS http://host:7300/api/v1/openapi.json | head -c 200
 curl -fsSI http://host:7300/                   # text/html, cache-control: no-cache
 ```

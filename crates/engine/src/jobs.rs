@@ -166,9 +166,11 @@ impl JobPayload {
     /// Which queue services this payload.
     pub fn queue(&self) -> Queue {
         match self {
-            JobPayload::AnalyzeRepository { .. } | JobPayload::ExtractRequirements { .. } => {
-                Queue::Analysis
-            }
+            JobPayload::AnalyzeRepository { .. } => Queue::Analysis,
+            // Requirement extraction runs a governed planner session:
+            // it belongs to the model-backed planning queue (ADR-010),
+            // never to the deterministic analysis queue.
+            JobPayload::ExtractRequirements { .. } => Queue::Planning,
             JobPayload::GeneratePlan { .. } => Queue::Planning,
             JobPayload::ExecuteStep { .. } | JobPayload::RepairExecution { .. } => {
                 Queue::Implementation
