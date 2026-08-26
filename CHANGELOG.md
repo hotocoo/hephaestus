@@ -16,6 +16,12 @@ until the 1.0 API contract freezes (its own ADR, to come).
   indefinitely. Found during live end-to-end verification of ADR-014;
   pinned by a regression test that serves exactly one queue and asserts
   where the chain lands.
+- SDK default transport: storing bare `fetch` on the client detached
+  it from its global receiver, so every dashboard request failed with
+  "Illegal invocation" in real browsers while Node-based tests passed.
+  The transport now wraps `globalThis.fetch`; found by driving the
+  live deployment with a headless browser and pinned by a regression
+  test that constructs the client without a fetch override.
 
 ### Added
 
