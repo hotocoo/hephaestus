@@ -24,6 +24,7 @@ secrets/
 /data/
 /.forge/
 /.live/
+/.hephaestus/
 
 # Python fixtures
 __pycache__/
