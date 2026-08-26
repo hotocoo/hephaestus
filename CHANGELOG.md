@@ -8,6 +8,25 @@ until the 1.0 API contract freezes (its own ADR, to come).
 
 ### Added
 
+- Deployment pipeline (ADR-013): configured deployment targets
+  (`[[deployment.targets]]` in TOML - named argv command plus mandatory
+  post-deployment verification hooks and a bounded timeout), executed
+  through the governed sandboxed shell under a new operator role whose
+  allowlist derives strictly from the target's own commands (Deploy
+  capability reserved to operators; secrets, network egress and source
+  writes forbidden for them like everyone else). Plans select targets
+  by exact name in `strategy.deployment`; unmatched names fail the run
+  before any command runs. The build stage bootstraps a durable
+  deployments row (one live row per run via partial unique index),
+  advances building -> deploying and chains one job that drives deploy
+  then verify as separate idempotent steps; failures finish the row as
+  failed with a bounded reason and fail the run terminally, with typed
+  DeploymentOutcome events appended in the same transaction. Worker
+  validation admits the `deployment` queue exactly when targets are
+  configured; job payload schema bumps to v3. New read endpoint GET
+  /api/v1/runs/{run_id}/deployment mirrored through the OpenAPI
+  inventory, zod contracts, regenerated SDK types and a run-detail
+  dashboard panel.
 - Web dashboard (ADR-012): a Vue 3 app under apps/web rendering
   server state and forwarding human decisions - overview, task list
   and idempotent intake form, plan rendering with per-step

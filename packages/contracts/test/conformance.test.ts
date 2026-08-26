@@ -193,6 +193,11 @@ describe("live conformance against hephaestus-server", () => {
     expect(events.status).toBe(200);
     expect(Array.isArray(events.body)).toBe(true);
     z.array(Event).parse(events.body);
+
+    // No deployment has run yet, so the lookup says so honestly.
+    const deployment = await authed("/api/v1/runs/" + context.runId + "/deployment");
+    expect(deployment.status).toBe(404);
+    expect(ErrorBody.parse(deployment.body)).toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("reports absent gates honestly and refuses premature merges", async () => {

@@ -379,8 +379,8 @@ fn refuses_model_backed_queue_without_provider_config() {
 /// The two queue vocabularies meet in this crate: configuration
 /// validates operator input against WORKER_QUEUE_NAMES, then the
 /// binary routes jobs by engine::Queue strings. The lists must agree
-/// exactly - config admits every honest queue plus explicitly refuses
-/// `deployment`, which the engine still names but nothing may serve.
+/// exactly - every engine queue is servable, each under its own
+/// preconditions (provider settings, configured targets).
 #[test]
 fn config_and_engine_queue_vocabularies_agree() {
     use hephaestus_config::{MODEL_BACKED_QUEUES, WORKER_QUEUE_NAMES};
@@ -389,7 +389,6 @@ fn config_and_engine_queue_vocabularies_agree() {
         .map(|q| q.as_str())
         .collect();
     let mut configurable: Vec<&str> = WORKER_QUEUE_NAMES.to_vec();
-    configurable.push("deployment");
     configurable.sort_unstable();
     let mut engine_sorted = engine_queues.clone();
     engine_sorted.sort_unstable();
@@ -399,4 +398,19 @@ fn config_and_engine_queue_vocabularies_agree() {
     for q in MODEL_BACKED_QUEUES {
         assert!(WORKER_QUEUE_NAMES.contains(&q));
     }
+}
+
+/// Serving `deployment` without any configured target is refused at
+/// startup: capacity for a queue that can never receive jobs would be
+/// simulation by another name (ADR-013).
+#[test]
+fn refuses_deployment_queue_without_targets() {
+    Command::cargo_bin("hephaestus-worker")
+        .expect("worker binary built by this crate")
+        .env_remove("HEPHAESTUS_CONFIG")
+        .env("HEPHAESTUS_DATABASE_URL", "postgres://db.internal:5432/x")
+        .env("HEPHAESTUS_WORKER_QUEUES", "analysis,deployment")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("deployment"));
 }

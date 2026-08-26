@@ -11,6 +11,7 @@ export type {
   ApprovalDecisionInput,
   ApprovalDecisionOutput,
   CreateTaskInput,
+  Deployment,
   Event,
   Gate,
   IntakeReceipt,

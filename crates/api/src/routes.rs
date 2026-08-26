@@ -24,9 +24,9 @@ use uuid::Uuid;
 
 use crate::auth::auth_middleware;
 use crate::dto::{
-    ApprovalDecisionRequest, ApprovalDecisionResponse, Authed, CreateTaskRequest, EventResponse,
-    GateResponse, IntakeResponse, MergeDecisionRequest, MergeDecisionResponse, Page,
-    ProjectResponse, RepositoryResponse, RunResponse, TaskResponse,
+    ApprovalDecisionRequest, ApprovalDecisionResponse, Authed, CreateTaskRequest,
+    DeploymentResponse, EventResponse, GateResponse, IntakeResponse, MergeDecisionRequest,
+    MergeDecisionResponse, Page, ProjectResponse, RepositoryResponse, RunResponse, TaskResponse,
 };
 use crate::state::AppState;
 use crate::{ApiError, ApiResult};
@@ -42,6 +42,7 @@ pub fn router(state: AppState) -> Router {
         .route("/tasks/{task_id}/plan", get(get_task_plan))
         .route("/tasks/{task_id}/run", get(get_task_run))
         .route("/runs/{run_id}", get(get_run))
+        .route("/runs/{run_id}/deployment", get(get_run_deployment))
         .route("/runs/{run_id}/events", get(list_run_events))
         .route(
             "/runs/{run_id}/approval",
@@ -262,6 +263,27 @@ async fn get_run(
             WorkflowRunId::from_uuid(id_of(&run_id, "run_id")?),
         )
         .await?;
+    Ok(Json(row.into()))
+}
+
+/// The run's latest deployment (any status); the dashboard's view of
+/// what shipped. 404 when the run never deployed - indistinguishable
+/// from a missing entity, exactly like every other scoped read.
+async fn get_run_deployment(
+    State(state): State<AppState>,
+    Authed(principal): Authed,
+    Path(run_id): Path<String>,
+) -> ApiResult<Json<DeploymentResponse>> {
+    let row = state
+        .db
+        .latest_deployment_for_run(
+            principal.organization_id,
+            WorkflowRunId::from_uuid(id_of(&run_id, "run_id")?),
+        )
+        .await?
+        .ok_or(Error::NotFound {
+            entity: "deployment",
+        })?;
     Ok(Json(row.into()))
 }
 

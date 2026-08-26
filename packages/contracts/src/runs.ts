@@ -30,3 +30,18 @@ export const Event = z.strictObject({
   occurred_at: IsoDateTime,
 });
 export type Event = z.infer<typeof Event>;
+
+/** A deployment of a built change set to a configured target. */
+export const Deployment = z.strictObject({
+  id: Uuid,
+  task_id: Uuid,
+  run_id: Uuid,
+  build_id: Uuid,
+  /** Configured target name the plan cited. */
+  target: z.string(),
+  status: z.enum(["running", "succeeded", "failed"]),
+  /** Why the deployment failed, when it failed. */
+  failure_reason: z.string().nullable(),
+  created_at: IsoDateTime,
+});
+export type Deployment = z.infer<typeof Deployment>;

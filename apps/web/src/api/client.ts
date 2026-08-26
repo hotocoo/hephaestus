@@ -18,6 +18,7 @@ import type {
   ApprovalDecisionInput,
   ApprovalDecisionOutput,
   CreateTaskInput,
+  Deployment,
   Event,
   Gate,
   IntakeReceipt,
@@ -49,6 +50,7 @@ export interface ControlPlane {
   getTaskPlan(taskId: string): Promise<Plan>;
   getTaskRun(taskId: string): Promise<Run>;
   getRun(runId: string): Promise<Run>;
+  getRunDeployment(runId: string): Promise<Deployment>;
   listRunEvents(runId: string, query?: PageQuery): Promise<Event[]>;
   getApprovalGate(runId: string): Promise<Gate>;
   decideApproval(runId: string, input: ApprovalDecisionInput): Promise<ApprovalDecisionOutput>;

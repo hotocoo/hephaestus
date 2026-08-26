@@ -13,6 +13,7 @@
 pub mod audit;
 pub mod catalog;
 pub mod delivery;
+pub mod deployment;
 pub mod events;
 pub mod execution;
 pub mod intake;

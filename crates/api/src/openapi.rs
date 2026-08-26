@@ -21,7 +21,7 @@ pub const OPENAPI_VERSION: &str = "3.1.0";
 /// Canonical `(method, path)` inventory of every operation the
 /// document describes. Tests pin the actual router against exactly
 /// this list so an undocumented route or a stale entry fails loudly.
-pub const OPERATIONS: [(&str, &str); 16] = [
+pub const OPERATIONS: [(&str, &str); 17] = [
     ("GET", "/healthz"),
     ("GET", "/readyz"),
     ("GET", "/api/v1/openapi.json"),
@@ -33,6 +33,7 @@ pub const OPERATIONS: [(&str, &str); 16] = [
     ("GET", "/api/v1/projects"),
     ("GET", "/api/v1/repositories"),
     ("GET", "/api/v1/runs/{run_id}"),
+    ("GET", "/api/v1/runs/{run_id}/deployment"),
     ("GET", "/api/v1/runs/{run_id}/events"),
     ("GET", "/api/v1/runs/{run_id}/approval"),
     ("POST", "/api/v1/runs/{run_id}/approval"),
@@ -184,6 +185,19 @@ pub fn openapi_document() -> Value {
                     ("200", ok_json("The run with its current workflow state.", sref("RunResponse"))),
                     ("401", error("Missing or unknown bearer token.")),
                     ("404", error("No run with that id exists in the caller's organization.")),
+                    ("422", error("The id is not a UUID.")),
+                ]),
+            )
+            .into(),
+            ("GET", "/api/v1/runs/{run_id}/deployment") => protected_operation(
+                "getRunDeployment",
+                "Fetch the run's latest deployment",
+                &["Runs"],
+                json!([]),
+                response_map(&[
+                    ("200", ok_json("The most recent deployment of the run, any status.", sref("DeploymentResponse"))),
+                    ("401", error("Missing or unknown bearer token.")),
+                    ("404", error("The run never deployed, or does not exist in the caller's organization.")),
                     ("422", error("The id is not a UUID.")),
                 ]),
             )
@@ -406,6 +420,20 @@ fn schemas() -> Value {
                 "lease_owner": {"type": ["string", "null"]},
                 "lease_expires_at": {"oneOf": [datetime(), {"type": "null"}]},
                 "last_transition_at": datetime()
+            }
+        },
+        "DeploymentResponse": {
+            "type": "object",
+            "required": ["id", "task_id", "run_id", "build_id", "target", "status", "failure_reason", "created_at"],
+            "properties": {
+                "id": uuid(),
+                "task_id": uuid(),
+                "run_id": uuid(),
+                "build_id": uuid(),
+                "target": {"type": "string", "description": "Configured target name the plan cited."},
+                "status": {"type": "string", "enum": ["running", "succeeded", "failed"]},
+                "failure_reason": {"type": ["string", "null"], "description": "Why the deployment failed, when it failed."},
+                "created_at": datetime()
             }
         },
         "EventResponse": {
@@ -839,6 +867,7 @@ mod tests {
             "IntakeResponse",
             "TaskResponse",
             "RunResponse",
+            "DeploymentResponse",
             "EventResponse",
             "GateResponse",
             "ProjectResponse",

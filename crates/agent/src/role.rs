@@ -32,6 +32,10 @@ pub enum AgentRole {
     Reviewer,
     /// Runs deterministic verification layers. Cannot mutate sources.
     Verifier,
+    /// Ships built change sets to configured deployment targets and
+    /// runs their post-deployment verification hooks (ADR-013). Its
+    /// shell commands come strictly from deployment configuration.
+    Operator,
 }
 
 impl AgentRole {
@@ -42,6 +46,7 @@ impl AgentRole {
             AgentRole::Implementer => "implementer",
             AgentRole::Reviewer => "reviewer",
             AgentRole::Verifier => "verifier",
+            AgentRole::Operator => "operator",
         }
     }
 }
@@ -97,12 +102,57 @@ impl RoleManifest {
                 vec!["fs.read".to_string(), "shell.exec".to_string()],
                 vec!["cargo".to_string()],
             ),
+            // The bare built-in operator holds no shell at all: real
+            // operator manifests are derived from configured deployment
+            // targets via [RoleManifest::operator_for_commands], because
+            // an allowlist invented here would be a fiction. Deploy is
+            // still granted so the role's purpose stays expressible.
+            AgentRole::Operator => (
+                "Ships built change sets to configured targets; commands derive from deployment configuration.",
+                vec![ToolCapability::WorkspaceRead, ToolCapability::Deploy],
+                vec!["fs.read".to_string(), "deploy.exec".to_string()],
+                Vec::new(),
+            ),
         };
         Self {
             role,
             description: description.to_string(),
             capabilities,
             allowed_tools,
+            allowed_commands,
+        }
+    }
+
+    /// Derive the operator manifest for one configured deployment
+    /// target's commands (ADR-013).
+    ///
+    /// The allowlist is exactly the commands configuration names - the
+    /// deploy command plus its mandatory verification hooks - so the
+    /// manifest can never exceed what operators wrote down. Empty
+    /// input fails validation (shell requires a non-empty allowlist).
+    pub fn operator_for_commands<I>(commands: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        let mut allowed_commands: Vec<String> = commands.into_iter().map(Into::into).collect();
+        allowed_commands.sort();
+        allowed_commands.dedup();
+        Self {
+            role: AgentRole::Operator,
+            description:
+                "Deploys built change sets to one configured target and verifies the result."
+                    .to_string(),
+            capabilities: vec![
+                ToolCapability::WorkspaceRead,
+                ToolCapability::ShellExec,
+                ToolCapability::Deploy,
+            ],
+            allowed_tools: vec![
+                "fs.read".to_string(),
+                "shell.exec".to_string(),
+                "deploy.exec".to_string(),
+            ],
             allowed_commands,
         }
     }
@@ -141,14 +191,13 @@ impl RoleManifest {
             }
         }
 
-        // 3) No current role may hold administrative capabilities.
-        //    Deploy/network/secret access belongs to future operator
-        //    roles whose variants extend these checks explicitly.
-        const FORBIDDEN_EVERYWHERE: [ToolCapability; 3] = [
-            ToolCapability::SecretRead,
-            ToolCapability::NetworkEgress,
-            ToolCapability::Deploy,
-        ];
+        // 3) Administrative capabilities stay locked down. Secret and
+        //    network access is forbidden for EVERY role, operators
+        //    included. Deployment rights exist only for the operator
+        //    role (ADR-013); every other role holding Deploy fails
+        //    closed exactly as before operators existed (ADR-005).
+        const FORBIDDEN_EVERYWHERE: [ToolCapability; 2] =
+            [ToolCapability::SecretRead, ToolCapability::NetworkEgress];
         for cap in FORBIDDEN_EVERYWHERE {
             if self.capabilities.contains(&cap) {
                 return Err(Error::Validation {
@@ -160,6 +209,12 @@ impl RoleManifest {
                     ),
                 });
             }
+        }
+        if self.role != AgentRole::Operator && self.capabilities.contains(&ToolCapability::Deploy) {
+            return Err(Error::Validation {
+                field: "capabilities".into(),
+                message: "only operator roles may hold capability deploy".into(),
+            });
         }
 
         // 4) Role separation, encoded in policy (ADR-005).
@@ -187,6 +242,17 @@ impl RoleManifest {
                     return Err(Error::Validation {
                         field: "capabilities".into(),
                         message: "verifier roles must not mutate sources".into(),
+                    });
+                }
+            }
+            // Operators deploy what was already built and verified;
+            // letting them edit sources would merge two duties that
+            // policy keeps apart.
+            AgentRole::Operator => {
+                if write {
+                    return Err(Error::Validation {
+                        field: "capabilities".into(),
+                        message: "operator roles must not mutate sources".into(),
                     });
                 }
             }
@@ -280,11 +346,74 @@ mod tests {
             AgentRole::Implementer,
             AgentRole::Reviewer,
             AgentRole::Verifier,
+            AgentRole::Operator,
         ] {
             let m = RoleManifest::built_in(role);
             m.validate(&reg)
                 .unwrap_or_else(|e| panic!("{role:?} manifest must validate: {e}"));
         }
+    }
+
+    #[test]
+    fn operator_manifests_derive_from_target_commands() {
+        let reg = registry();
+        let m = RoleManifest::operator_for_commands([
+            "heph-deploy".to_string(),
+            "heph-probe".to_string(),
+        ]);
+        m.validate(&reg)
+            .unwrap_or_else(|e| panic!("operator manifest must validate: {e}"));
+        assert!(
+            m.capability_set("/tmp/ws".into())
+                .has(ToolCapability::Deploy)
+        );
+        assert_eq!(
+            m.allowed_commands(),
+            ["heph-deploy".to_string(), "heph-probe".to_string()]
+        );
+
+        // An operator with nothing to run is a configuration error.
+        let empty = RoleManifest::operator_for_commands(Vec::<String>::new());
+        assert!(empty.validate(&reg).is_err());
+    }
+
+    #[test]
+    fn only_operators_may_hold_deploy() {
+        let reg = registry();
+        for role in [
+            AgentRole::Planner,
+            AgentRole::Implementer,
+            AgentRole::Reviewer,
+            AgentRole::Verifier,
+        ] {
+            let mut m = RoleManifest::built_in(role);
+            m.capabilities.push(ToolCapability::Deploy);
+            m.allowed_tools.push("deploy.exec".into());
+            let err = m.validate(&reg).expect_err("deploy must be refused");
+            assert!(
+                err.to_string().contains("only operator roles"),
+                "{role:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn operators_cannot_write_secrets_or_reach_network() {
+        let reg = registry();
+
+        let mut write = RoleManifest::operator_for_commands(["heph-deploy".to_string()]);
+        write.capabilities.push(ToolCapability::WorkspaceWrite);
+        write.allowed_tools.push("fs.write".into());
+        let err = write.validate(&reg).expect_err("operator write refused");
+        assert!(err.to_string().contains("must not mutate"), "{err}");
+
+        let mut secret = RoleManifest::operator_for_commands(["heph-deploy".to_string()]);
+        secret.capabilities.push(ToolCapability::SecretRead);
+        assert!(secret.validate(&reg).is_err());
+
+        let mut network = RoleManifest::operator_for_commands(["heph-deploy".to_string()]);
+        network.capabilities.push(ToolCapability::NetworkEgress);
+        assert!(network.validate(&reg).is_err());
     }
 
     #[test]

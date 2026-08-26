@@ -10,11 +10,11 @@ use hephaestus_core::id::{ExecutionId, PlanId, StepId, TaskId, WorkflowRunId};
 
 /// Current payload schema version.
 ///
-/// v2 adds the execution-phase payloads (`repair_execution`,
-/// `run_review`). v1 workers reject v2 envelopes loudly instead of
-/// guessing; v2 workers still decode v1 envelopes for rolling
-/// upgrades.
-pub const JOB_SCHEMA_VERSION: u32 = 2;
+/// v3 adds the deployment payload (`deploy_change_set`, ADR-013).
+/// Workers reject envelopes whose version differs from their own
+/// loudly - unknown versions are dead-lettered, never guessed at - so
+/// mixed-version fleets drain old queues before upgrading.
+pub const JOB_SCHEMA_VERSION: u32 = 3;
 
 /// Every queue name in the system.
 ///
@@ -141,6 +141,14 @@ pub enum JobPayload {
         /// Driving run.
         run_id: WorkflowRunId,
     },
+    /// Ship the built change set to the target named by the plan and
+    /// run the mandatory post-deployment verification hooks (ADR-013).
+    DeployChangeSet {
+        /// Owning task.
+        task_id: TaskId,
+        /// Driving run.
+        run_id: WorkflowRunId,
+    },
 }
 
 /// Why an execution entered a repair round. The repair session is
@@ -168,6 +176,7 @@ impl JobPayload {
             JobPayload::RunVerification { .. } => Queue::Verification,
             JobPayload::RunReview { .. } => Queue::Review,
             JobPayload::BuildArtifact { .. } => Queue::Build,
+            JobPayload::DeployChangeSet { .. } => Queue::Deployment,
         }
     }
 

@@ -91,6 +91,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/{run_id}/deployment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Entity identifier; must be a UUID. */
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        /** Fetch the run's latest deployment */
+        get: operations["getRunDeployment"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/{run_id}/events": {
         parameters: {
             query?: never;
@@ -304,6 +324,24 @@ export interface components {
              */
             risk?: "low" | "medium" | "high" | "critical";
             title: string;
+        };
+        DeploymentResponse: {
+            /** Format: uuid */
+            build_id: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Why the deployment failed, when it failed. */
+            failure_reason: string | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            run_id: string;
+            /** @enum {string} */
+            status: "running" | "succeeded" | "failed";
+            /** @description Configured target name the plan cited. */
+            target: string;
+            /** Format: uuid */
+            task_id: string;
         };
         ErrorBody: {
             /** @description Stable public error code, e.g. VALIDATION_FAILED or UNAUTHENTICATED. */
@@ -705,6 +743,56 @@ export interface operations {
                 };
             };
             /** @description Malformed body or non-UUID id. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getRunDeployment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Entity identifier; must be a UUID. */
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The most recent deployment of the run, any status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentResponse"];
+                };
+            };
+            /** @description Missing or unknown bearer token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The run never deployed, or does not exist in the caller's organization. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The id is not a UUID. */
             422: {
                 headers: {
                     [name: string]: unknown;

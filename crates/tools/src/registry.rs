@@ -70,6 +70,11 @@ pub fn builtin_tools() -> Vec<ToolDefinition> {
             description: "Write a file inside the assigned workspace",
             required: ToolCapability::WorkspaceWrite,
         },
+        ToolDefinition {
+            name: "deploy.exec",
+            description: "Ship the built change set to one configured target",
+            required: ToolCapability::Deploy,
+        },
     ]
 }
 

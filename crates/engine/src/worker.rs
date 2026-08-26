@@ -55,6 +55,7 @@ pub struct HandlerRegistry {
     run_verification: Option<Arc<dyn JobHandler>>,
     run_review: Option<Arc<dyn JobHandler>>,
     build_artifact: Option<Arc<dyn JobHandler>>,
+    deploy_change_set: Option<Arc<dyn JobHandler>>,
 }
 
 impl HandlerRegistry {
@@ -111,6 +112,12 @@ impl HandlerRegistry {
         self
     }
 
+    /// Register the deployment handler (ADR-013).
+    pub fn with_deploy_change_set(mut self, h: Arc<dyn JobHandler>) -> Self {
+        self.deploy_change_set = Some(h);
+        self
+    }
+
     fn route(&self, payload: &JobPayload) -> Option<Arc<dyn JobHandler>> {
         match payload {
             JobPayload::AnalyzeRepository { .. } => self.analyze.clone(),
@@ -121,6 +128,7 @@ impl HandlerRegistry {
             JobPayload::RunVerification { .. } => self.run_verification.clone(),
             JobPayload::RunReview { .. } => self.run_review.clone(),
             JobPayload::BuildArtifact { .. } => self.build_artifact.clone(),
+            JobPayload::DeployChangeSet { .. } => self.deploy_change_set.clone(),
         }
     }
 }
@@ -328,5 +336,6 @@ fn kind_of(p: &JobPayload) -> &'static str {
         JobPayload::RepairExecution { .. } => "repair_execution",
         JobPayload::RunReview { .. } => "run_review",
         JobPayload::BuildArtifact { .. } => "build_artifact",
+        JobPayload::DeployChangeSet { .. } => "deploy_change_set",
     }
 }

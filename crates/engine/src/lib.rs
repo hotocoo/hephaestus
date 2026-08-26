@@ -10,6 +10,7 @@
 pub mod analysis;
 pub mod approval;
 pub mod delivery;
+pub mod deployment;
 pub mod execution;
 pub mod governed;
 pub mod intake;
@@ -24,6 +25,7 @@ pub use approval::{ApprovalDecisionInput, ApprovalOutcome, ApprovalService};
 pub use delivery::{
     ARTIFACT_DIR, BUILD_COMMAND, BuildHandler, MergeDecisionInput, MergeOutcome, MergeService,
 };
+pub use deployment::{DeployCommand, DeploymentHandler, DeploymentSettings, DeploymentTargetSpec};
 pub use execution::{
     ExecutionHandler, ImplementationDocument, MAX_FIX_ROUNDS, RepairHandler, StepOutcomeDocument,
 };

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   ApprovalOutcome,
+  Deployment,
   ErrorBody,
   Event,
   IsoDateTime,
@@ -107,6 +108,27 @@ describe("wire mirrors", () => {
       occurred_at: "2026-08-25T09:30:00Z",
     });
     expect(event.aggregate).toBe("workflow_run");
+  });
+
+  it("mirrors deployments with their status vocabulary", () => {
+    const deployment = Deployment.parse({
+      id: uuid(),
+      task_id: uuid(),
+      run_id: uuid(),
+      build_id: uuid(),
+      target: "staging",
+      status: "failed",
+      failure_reason: "heph-deploy failed (exit_code=Some(3)): boom",
+      created_at: "2026-08-25T09:30:00Z",
+    });
+    expect(deployment.status).toBe("failed");
+
+    // Only the three documented statuses parse.
+    expect(Deployment.safeParse({ ...deployment, status: "paused" }).success).toBe(false);
+    // Unknown fields fail, like every strict mirror.
+    expect(
+      Deployment.safeParse({ ...deployment, verified_at: "2026-08-25T10:00:00Z" }).success,
+    ).toBe(false);
   });
 
   it("keeps plan invariants: at least one contiguous step", () => {

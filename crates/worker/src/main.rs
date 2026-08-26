@@ -26,8 +26,9 @@ use hephaestus_core::Error;
 use hephaestus_db::Db;
 use hephaestus_engine::worker::{HandlerRegistry, Worker};
 use hephaestus_engine::{
-    AnalysisHandler, BuildHandler, ExecutionHandler, ExtractionHandler, PlanningHandler,
-    RepairHandler, ReviewHandler, RunVerificationHandler, SessionDeps, WorkspaceLayout,
+    AnalysisHandler, BuildHandler, DeployCommand, DeploymentHandler, DeploymentSettings,
+    DeploymentTargetSpec, ExecutionHandler, ExtractionHandler, PlanningHandler, RepairHandler,
+    ReviewHandler, RunVerificationHandler, SessionDeps, WorkspaceLayout,
 };
 
 fn main() {
@@ -53,6 +54,25 @@ fn config_path() -> Option<PathBuf> {
 
 fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok()
+}
+
+/// Convert configured deployment targets into the engine's specs.
+/// Config validation ran at load; this only re-shapes argv vectors.
+fn deployment_settings(cfg: &Config) -> hephaestus_core::Result<DeploymentSettings> {
+    let mut specs = Vec::with_capacity(cfg.deployment.targets.len());
+    for target in &cfg.deployment.targets {
+        specs.push(DeploymentTargetSpec {
+            name: target.name.clone(),
+            command: DeployCommand::from_argv(&target.command)?,
+            verify: target
+                .verify
+                .iter()
+                .map(|hook| DeployCommand::from_argv(hook))
+                .collect::<hephaestus_core::Result<Vec<_>>>()?,
+            timeout_secs: target.timeout_secs,
+        });
+    }
+    Ok(DeploymentSettings::new(specs))
 }
 
 fn run() -> hephaestus_core::Result<()> {
@@ -97,6 +117,11 @@ async fn serve_jobs(db: Db, cfg: &Config) -> hephaestus_core::Result<()> {
         .iter()
         .any(|q| MODEL_BACKED_QUEUES.contains(&q.as_str()));
 
+    // Target configuration travels with every builder: routing a
+    // built change set is part of the build stage, whether or not
+    // THIS process also executes deployments.
+    let deployments = Arc::new(deployment_settings(cfg)?);
+
     // Validation guarantees provider settings whenever needs_model; a
     // deterministic-only worker intentionally builds no sessions.
     let deps = if needs_model {
@@ -121,10 +146,25 @@ async fn serve_jobs(db: Db, cfg: &Config) -> hephaestus_core::Result<()> {
         None
     };
 
+    let builds_with_targets = if deployments.targets.is_empty() {
+        BuildHandler::new(layout.clone())
+    } else {
+        tracing::info!(
+            targets = %deployments.names(),
+            "deployment targets configured"
+        );
+        BuildHandler::new(layout.clone()).with_deployments(Arc::clone(&deployments))
+    };
     let mut registry = HandlerRegistry::new()
         .with_analyze(Arc::new(AnalysisHandler::new(layout.clone())))
         .with_run_verification(Arc::new(RunVerificationHandler::new(layout.clone())))
-        .with_build_artifact(Arc::new(BuildHandler::new(layout.clone())));
+        .with_build_artifact(Arc::new(builds_with_targets));
+    if queues.iter().any(|q| q == "deployment") {
+        registry = registry.with_deploy_change_set(Arc::new(DeploymentHandler::new(
+            layout.clone(),
+            Arc::clone(&deployments),
+        )));
+    }
     if let Some(deps) = deps {
         registry = registry
             .with_extract_requirements(Arc::new(ExtractionHandler::new(

@@ -85,6 +85,14 @@ Currently working end-to-end:
   `@hephaestus/contracts` (strict zod schemas over real responses) and
   `@hephaestus/sdk` (a typed client whose declarations are regenerated
   from the served document in CI, byte-compared to catch drift)
+* Deployment pipeline (ADR-013): configured targets
+  (`[[deployment.targets]]` - named command plus MANDATORY
+  post-deployment verification hooks) reached through a dedicated,
+  configuration-derived operator role; plans name the target in
+  `strategy.deployment` and unmatched names fail loudly before any
+  command runs; one durable job drives deploy-then-verify with
+  crash-replay at every step, evidence rows under a one-live-row-per-run
+  index, and typed outcome events appended transactionally
 
 ## Architecture (in progress)
 

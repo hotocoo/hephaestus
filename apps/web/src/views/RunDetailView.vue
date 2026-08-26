@@ -7,7 +7,7 @@
 import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { PhCaretLeft } from "@phosphor-icons/vue";
-import type { Gate } from "@hephaestus/sdk";
+import type { Deployment, Gate } from "@hephaestus/sdk";
 import { useControlPlane, notFoundToNull } from "@/api/client";
 import { useAsyncResource } from "@/composables/useAsyncResource";
 import { usePolling } from "@/composables/usePolling";
@@ -44,6 +44,13 @@ const mergeGate = useAsyncResource(
   { watch: [run.data] },
 );
 
+/** Most runs never deploy; absence renders as no panel at all. */
+const deployment = useAsyncResource(
+  (): Promise<Deployment | null> =>
+    client.getRunDeployment(runId.value).catch<Deployment | null>(notFoundToNull),
+  { watch: [run.data] },
+);
+
 function reloadLive(): void {
   run.reload();
   events.reload();
@@ -55,6 +62,18 @@ function reloadAfterDecision(): void {
   void approvalGate.reload();
   void mergeGate.reload();
 }
+
+/** Render model for the deployment panel; null hides the panel. */
+const deploymentView = computed(() => {
+  const current = deployment.data.value;
+  if (current === null) return null;
+  return {
+    target: current.target,
+    status: current.status,
+    reason: current.failure_reason,
+    created: formatDateTime(current.created_at),
+  };
+});
 
 /** Render model so the template never casts server data. */
 const view = computed(() => {
@@ -128,6 +147,26 @@ const view = computed(() => {
             :gate="mergeGate.data.value ?? null"
             @decided="reloadAfterDecision"
           />
+        </section>
+        <section v-if="deploymentView !== null" class="panel" aria-label="deployment">
+          <div class="panel__head"><h2>Deployment</h2></div>
+          <div class="panel__body">
+            <dl class="kv">
+              <dt>Target</dt>
+              <dd><code class="mono">{{ deploymentView.target }}</code></dd>
+              <dt>Status</dt>
+              <dd>{{ deploymentView.status }}</dd>
+              <dt>Started</dt>
+              <dd>{{ deploymentView.created }}</dd>
+            </dl>
+            <p
+              v-if="deploymentView.reason !== null"
+              class="cell-sub mono"
+              style="margin-top:10px; overflow-wrap:anywhere"
+            >
+              {{ deploymentView.reason }}
+            </p>
+          </div>
         </section>
       </div>
     </div>

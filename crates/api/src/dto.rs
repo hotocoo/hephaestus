@@ -10,6 +10,7 @@ use axum::http::request::Parts;
 use chrono::{DateTime, Utc};
 use hephaestus_core::domain::{Priority, RiskLevel};
 use hephaestus_db::catalog::{ProjectRow, RepositoryRow};
+use hephaestus_db::deployment::DeploymentRow;
 use hephaestus_db::events::EventRecord;
 use hephaestus_db::planning::ApprovalRow;
 use hephaestus_db::tasks::TaskRow;
@@ -158,6 +159,42 @@ impl From<TaskRow> for TaskResponse {
             labels: row.labels,
             created_at: row.created_at,
             updated_at: row.updated_at,
+        }
+    }
+}
+
+/// A deployment of a built change set to a configured target.
+#[derive(Debug, Serialize)]
+pub struct DeploymentResponse {
+    /// Deployment id.
+    pub id: Uuid,
+    /// Owning task.
+    pub task_id: Uuid,
+    /// Driving workflow run.
+    pub run_id: Uuid,
+    /// Build whose verified change set shipped.
+    pub build_id: Uuid,
+    /// Configured target name the plan cited.
+    pub target: String,
+    /// "running", "succeeded" or "failed".
+    pub status: String,
+    /// Why the deployment failed, when it failed.
+    pub failure_reason: Option<String>,
+    /// When the deployment row was created.
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<DeploymentRow> for DeploymentResponse {
+    fn from(row: DeploymentRow) -> Self {
+        Self {
+            id: row.id,
+            task_id: row.task_id,
+            run_id: row.run_id,
+            build_id: row.build_id,
+            target: row.target,
+            status: row.status,
+            failure_reason: row.failure_reason,
+            created_at: row.created_at,
         }
     }
 }

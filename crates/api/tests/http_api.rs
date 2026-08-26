@@ -800,3 +800,149 @@ async fn task_run_lookup_resolves_current_run() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["code"], "NOT_FOUND");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_deployment_lookup_is_scoped_and_honest() {
+    use hephaestus_core::domain::{Plan, PlanStep, StrategyNotes};
+    use hephaestus_core::id::{PlanId, StepId};
+    use hephaestus_db::tasks::NewTask;
+
+    let _guard = SERIAL.lock().await;
+    let db = test_db().await;
+    let (org_a, proj_a, repo_a) = seed_tenant(&db).await;
+    let (org_b, _proj_b, _repo_b) = seed_tenant(&db).await;
+
+    let app = app_with(
+        &db,
+        vec![
+            key_for(TOKEN_A, org_a, "tester-a"),
+            key_for(TOKEN_B, org_b, "tester-b"),
+        ],
+        false,
+    );
+    let auth_a = [bearer(TOKEN_A)];
+    let auth_b = [bearer(TOKEN_B)];
+    let empty: &[(&str, &str)] = &[];
+
+    // Malformed and unknown ids fail with the shared shape.
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        "/api/v1/runs/not-a-uuid/deployment",
+        &auth_a,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["field"], "run_id");
+
+    let missing = uuid::Uuid::now_v7().to_string();
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        &format!("/api/v1/runs/{missing}/deployment"),
+        &auth_a,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "NOT_FOUND");
+
+    // Seed a run whose change set actually shipped: task -> run ->
+    // plan -> passed execution -> succeeded build -> deployment row.
+    let task = db
+        .create_task(&NewTask {
+            organization_id: org_a,
+            project_id: proj_a,
+            repository_id: repo_a,
+            title: "ship it",
+            description: "",
+            priority: "medium",
+            risk: "low",
+            labels: &[],
+            idempotency_key: None,
+        })
+        .await
+        .expect("task");
+    let run = db.create_run(org_a, task).await.expect("run");
+
+    let plan_id = PlanId::generate();
+    let mut plan = Plan {
+        id: plan_id,
+        task_id: task,
+        objective: "objective".into(),
+        steps: vec![PlanStep {
+            id: StepId::generate(),
+            plan_id,
+            position: 1,
+            action: "do".into(),
+            verification: "unit:x".into(),
+            risks: vec![],
+        }],
+        affected_components: vec![],
+        affected_symbols: vec![],
+        strategy: StrategyNotes {
+            rollback: None,
+            deployment: Some("staging".into()),
+            verification: vec![],
+        },
+        created_at: chrono::Utc::now(),
+        prompt_version: None,
+    };
+    plan.steps[0].plan_id = plan.id;
+    db.create_plan(org_a, task, run, &plan).await.expect("plan");
+    let exec = db
+        .create_execution_for_run(org_a, task, run, plan_id)
+        .await
+        .expect("execution");
+    db.finish_execution(org_a, exec, "passed")
+        .await
+        .expect("passed");
+    let build = db
+        .create_build_for_run(org_a, task, run, exec)
+        .await
+        .expect("build");
+    db.finish_build(
+        org_a,
+        run,
+        build,
+        true,
+        Some("target/debug"),
+        Some(&"a".repeat(64)),
+    )
+    .await
+    .expect("build succeeded");
+    db.create_deployment_for_build(org_a, task, run, build, "staging")
+        .await
+        .expect("deployment");
+
+    // The owner sees the deployment with its wire shape.
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        &format!("/api/v1/runs/{run}/deployment"),
+        &auth_a,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["target"], "staging");
+    assert_eq!(body["status"], "running");
+    assert_eq!(body["run_id"], run.as_uuid().to_string());
+    assert_eq!(body["build_id"], build.as_uuid().to_string());
+    assert_eq!(body["failure_reason"], Value::Null);
+
+    // Another tenant's key cannot see the deployment at all.
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        &format!("/api/v1/runs/{run}/deployment"),
+        &auth_b,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "NOT_FOUND");
+
+    let _ = empty;
+}

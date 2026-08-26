@@ -17,6 +17,7 @@ export type Task = Schemas["TaskResponse"];
 export type CreateTaskInput = Schemas["CreateTaskRequest"];
 export type IntakeReceipt = Schemas["IntakeResponse"];
 export type Run = Schemas["RunResponse"];
+export type Deployment = Schemas["DeploymentResponse"];
 export type Event = Schemas["EventResponse"];
 export type Plan = Schemas["Plan"];
 export type Gate = Schemas["GateResponse"];
@@ -194,6 +195,11 @@ export class HephaestusClient {
 
   async getRun(runId: string): Promise<Run> {
     return this.request("GET", "/api/v1/runs/" + idSegment(runId));
+  }
+
+  /** The run's latest deployment; rejects with ApiError(404) when none. */
+  async getRunDeployment(runId: string): Promise<Deployment> {
+    return this.request("GET", "/api/v1/runs/" + idSegment(runId) + "/deployment");
   }
 
   async listRunEvents(runId: string, query: PageQuery = {}): Promise<Event[]> {

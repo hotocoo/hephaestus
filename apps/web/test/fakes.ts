@@ -14,6 +14,7 @@ import type {
   ApprovalDecisionInput,
   ApprovalDecisionOutput,
   CreateTaskInput,
+  Deployment,
   Event,
   Gate,
   IntakeReceipt,
@@ -63,6 +64,20 @@ export function sampleRun(overrides: Partial<Run> = {}): Run {
     lease_owner: null,
     lease_expires_at: null,
     last_transition_at: NOW,
+    ...overrides,
+  };
+}
+
+export function sampleDeployment(overrides: Partial<Deployment> = {}): Deployment {
+  return {
+    id: "01900000-0000-7000-8000-00000000000c",
+    task_id: TASK_ID,
+    run_id: RUN_ID,
+    build_id: "01900000-0000-7000-8000-00000000000d",
+    target: "staging",
+    status: "succeeded",
+    failure_reason: null,
+    created_at: NOW,
     ...overrides,
   };
 }
@@ -150,6 +165,7 @@ export class FakeControlPlane implements ControlPlane {
       ],
     ],
   ]);
+  deploymentsByRun = new Map<string, Deployment>([[RUN_ID, sampleDeployment()]]);
 
   async getHealthz(): Promise<{ status: string }> {
     return { status: "ok" };
@@ -191,6 +207,12 @@ export class FakeControlPlane implements ControlPlane {
       if (run.id === runId) return run;
     }
     throw notFound();
+  }
+
+  async getRunDeployment(runId: string): Promise<Deployment> {
+    const deployment = this.deploymentsByRun.get(runId);
+    if (deployment === undefined) throw notFound();
+    return deployment;
   }
 
   async listRunEvents(runId: string): Promise<Event[]> {

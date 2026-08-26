@@ -41,6 +41,9 @@ pub struct Config {
     pub model: ModelConfig,
     /// Worker loop settings.
     pub worker: WorkerSettings,
+    /// Deployment targets (ADR-013). Empty means no executor exists and
+    /// runs demanding deployment fail loudly, exactly as before.
+    pub deployment: DeploymentConfig,
     /// Environment name: development | test | staging | production.
     pub environment: Environment,
 }
@@ -56,6 +59,7 @@ impl Default for Config {
             auth: AuthConfig::default(),
             model: ModelConfig::default(),
             worker: WorkerSettings::default(),
+            deployment: DeploymentConfig::default(),
             environment: Environment::Development,
         }
     }
@@ -273,17 +277,20 @@ impl Default for AuthConfig {
 /// Queue names a worker process can serve.
 ///
 /// Mirrors `hephaestus_engine::jobs::Queue::as_str`; the worker crate
-/// pins the two lists together with a test so they cannot drift. The
-/// `deployment` queue is deliberately absent: no deployment executor
-/// exists yet (ADR-008), and configuring workers for a queue that can
-/// never legitimately receive jobs would be simulation by another name.
-pub const WORKER_QUEUE_NAMES: [&str; 6] = [
+/// pins the two lists together with a test so they cannot drift. Every
+/// engine queue is listed; serving one still demands its own
+/// preconditions - model-backed queues require provider settings and
+/// `deployment` requires at least one configured target (ADR-013).
+/// Configuring capacity for a queue whose preconditions fail would be
+/// simulation by another name, so validation refuses it outright.
+pub const WORKER_QUEUE_NAMES: [&str; 7] = [
     "analysis",
     "planning",
     "implementation",
     "verification",
     "review",
     "build",
+    "deployment",
 ];
 
 /// Queues whose handlers run governed model sessions.
@@ -371,6 +378,52 @@ impl Default for WorkerSettings {
             poll_interval_ms: 500,
             concurrency: 4,
         }
+    }
+}
+
+/// One configured deployment target (ADR-013).
+///
+/// A target is a named, deterministic command plus MANDATORY
+/// post-deployment verification hooks, executed through the governed
+/// sandboxed shell as argv vectors inside the run workspace. Programs
+/// must be bare executable names - the same allowlist rule every other
+/// shell capability obeys.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentTarget {
+    /// Name plans cite in `strategy.deployment` to select this target.
+    pub name: String,
+    /// Deploy command: first element is the program, the rest arguments.
+    pub command: Vec<String>,
+    /// Post-deployment verification hooks, each an argv vector. Every
+    /// hook must exit zero for the deployment to verify; empty is a
+    /// configuration error because an unchecked deployment is a
+    /// simulation risk, not a feature.
+    pub verify: Vec<Vec<String>>,
+    /// Wall-clock cap for the deploy command and for each hook.
+    pub timeout_secs: u64,
+}
+
+/// Deployment target settings (`[[deployment.targets]]`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentConfig {
+    /// Named targets. Empty means no executor exists: the `deployment`
+    /// queue becomes unservable and runs demanding deployment fail
+    /// loudly, exactly as ADR-008 specified before executors landed.
+    pub targets: Vec<DeploymentTarget>,
+}
+
+/// Bounds for per-target wall-clock caps (inclusive).
+pub const DEPLOY_TIMEOUT_RANGE: std::ops::RangeInclusive<u64> = 10..=3600;
+
+/// Timeout used when a target omits `timeout_secs`.
+pub const DEFAULT_DEPLOY_TIMEOUT_SECS: u64 = 600;
+
+impl DeploymentConfig {
+    /// The named target, if configured.
+    pub fn find(&self, name: &str) -> Option<&DeploymentTarget> {
+        self.targets.iter().find(|t| t.name == name)
     }
 }
 
@@ -516,6 +569,21 @@ impl Config {
                 self.worker.concurrency = v;
             }
         }
+        if let Some(d) = f.deployment
+            && let Some(targets) = d.targets
+        {
+            // The file section defines the complete target set; targets
+            // are deployment facts, not incremental overrides.
+            self.deployment.targets = targets
+                .into_iter()
+                .map(|t| DeploymentTarget {
+                    name: t.name,
+                    command: t.command,
+                    verify: t.verify,
+                    timeout_secs: t.timeout_secs.unwrap_or(DEFAULT_DEPLOY_TIMEOUT_SECS),
+                })
+                .collect();
+        }
         if let Some(e) = f.environment {
             self.environment = e;
         }
@@ -631,12 +699,6 @@ impl Config {
         let mut seen_queues = HashSet::new();
         for q in &self.worker.queues {
             let name = q.trim();
-            if name == "deployment" {
-                return Err(hephaestus_core::Error::Config(
-                    "worker.queues: 'deployment' has no executor yet (ADR-008); runs demanding                      deployment fail loudly by design, so no worker may claim to serve it"
-                        .into(),
-                ));
-            }
             if !WORKER_QUEUE_NAMES.contains(&name) {
                 return Err(hephaestus_core::Error::Config(format!(
                     "worker.queues contains unknown queue {name:?}; valid queues are {}",
@@ -664,6 +726,7 @@ impl Config {
                 "worker.concurrency must be within 1..=64".into(),
             ));
         }
+        self.validate_deployment_targets()?;
         // Model-backed queues demand a configured provider; serving
         // them without one would retry every job into dead-letter.
         let needs_model = self
@@ -686,6 +749,17 @@ impl Config {
                         .into(),
                 ));
             }
+        }
+        // The deployment queue demands a configured executor: capacity
+        // for a queue that can never receive jobs would be simulation
+        // by another name (ADR-013).
+        let serves_deployment = self.worker.queues.iter().any(|q| q.trim() == "deployment");
+        if serves_deployment && self.deployment.targets.is_empty() {
+            return Err(hephaestus_core::Error::Config(
+                "worker.queues: serving 'deployment' requires at least one \
+                 [deployment.targets] entry"
+                    .into(),
+            ));
         }
         if self.environment.is_production() {
             if self.auth.disabled {
@@ -723,6 +797,74 @@ impl Config {
         }
         Ok(())
     }
+
+    /// Fail closed on malformed deployment targets: duplicate names,
+    /// non-bare program names, empty argv elements and missing or
+    /// unbounded timeouts are startup errors, not deploy-time surprises.
+    fn validate_deployment_targets(&self) -> Result<()> {
+        let mut seen = HashSet::new();
+        for target in &self.deployment.targets {
+            let name = target.name.trim();
+            if name.is_empty() {
+                return Err(hephaestus_core::Error::Config(
+                    "deployment.targets name must not be empty".into(),
+                ));
+            }
+            if !seen.insert(name.to_string()) {
+                return Err(hephaestus_core::Error::Config(format!(
+                    "deployment.targets contains duplicate name {name:?}"
+                )));
+            }
+            validate_target_argv(name, "command", &target.command)?;
+            if target.verify.is_empty() {
+                return Err(hephaestus_core::Error::Config(format!(
+                    "deployment.targets[{name}].verify must hold at least one hook; an \
+                     unchecked deployment is a simulation risk"
+                )));
+            }
+            for (idx, hook) in target.verify.iter().enumerate() {
+                validate_target_argv(name, &format!("verify[{idx}]"), hook)?;
+            }
+            if !DEPLOY_TIMEOUT_RANGE.contains(&target.timeout_secs) {
+                return Err(hephaestus_core::Error::Config(format!(
+                    "deployment.targets[{name}].timeout_secs must be within \
+                     {}..={}",
+                    DEPLOY_TIMEOUT_RANGE.start(),
+                    DEPLOY_TIMEOUT_RANGE.end()
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One argv vector: non-empty overall, bare program name first, no
+/// blank elements anywhere. Shared by command and hooks.
+fn validate_target_argv(target: &str, what: &str, argv: &[String]) -> Result<()> {
+    let Some(program) = argv.first() else {
+        return Err(hephaestus_core::Error::Config(format!(
+            "deployment.targets[{target}].{what} must not be empty"
+        )));
+    };
+    let program = program.trim();
+    if program.is_empty()
+        || program == "."
+        || program == ".."
+        || program.contains('/')
+        || program.contains('\\')
+    {
+        return Err(hephaestus_core::Error::Config(format!(
+            "deployment.targets[{target}].{what} program {program:?} is not a bare executable name"
+        )));
+    }
+    for arg in argv {
+        if arg.trim().is_empty() {
+            return Err(hephaestus_core::Error::Config(format!(
+                "deployment.targets[{target}].{what} contains a blank argument"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn parse_environment(v: &str) -> Environment {
@@ -784,6 +926,7 @@ struct ConfigFile {
     auth: Option<FileAuth>,
     model: Option<FileModel>,
     worker: Option<FileWorker>,
+    deployment: Option<FileDeployment>,
     environment: Option<Environment>,
 }
 
@@ -860,6 +1003,25 @@ struct FileWorker {
     lease_ttl_secs: Option<u64>,
     poll_interval_ms: Option<u64>,
     concurrency: Option<u32>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct FileDeployment {
+    targets: Option<Vec<FileDeploymentTarget>>,
+}
+
+/// Required fields stay required at file level too: a target without a
+/// command or without hooks must fail to parse, not load half-formed.
+/// `name` and `command` are plain required strings/vectors; only
+/// `timeout_secs` carries a default.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileDeploymentTarget {
+    name: String,
+    command: Vec<String>,
+    verify: Vec<Vec<String>>,
+    timeout_secs: Option<u64>,
 }
 
 #[cfg(test)]
@@ -1160,11 +1322,73 @@ mod tests {
         assert!(err.to_string().contains("unknown queue"), "got: {err}");
     }
 
+    /// The deployment queue stays unservable until a target exists -
+    /// capacity for a queue that can never receive jobs would be
+    /// simulation by another name (ADR-013).
     #[test]
-    fn deployment_queue_rejected_with_reason() {
+    fn deployment_queue_rejected_without_targets() {
         let (_dir, path) = write_tmp("[worker]\nqueues = [\"analysis\", \"deployment\"]\n");
         let err = Config::load(Some(&path), no_env).unwrap_err();
-        assert!(err.to_string().contains("no executor yet"), "got: {err}");
+        assert!(err.to_string().contains("deployment"), "got: {err}");
+    }
+
+    const STAGING_TARGET: &str = "[[deployment.targets]]
+         name = \"staging\"
+         command = [\"heph-deploy\", \"--env\", \"staging\"]
+         verify = [[\"heph-probe\", \"--ready\"]]
+";
+
+    #[test]
+    fn deployment_queue_loads_with_configured_target() {
+        let (_dir, path) = write_tmp(&format!(
+            "[worker]\nqueues = [\"analysis\", \"deployment\"]\n\n{STAGING_TARGET}"
+        ));
+        let cfg = Config::load(Some(&path), no_env).expect("targets satisfy the precondition");
+        assert_eq!(cfg.deployment.targets.len(), 1);
+        let target = cfg.deployment.find("staging").expect("target by name");
+        assert_eq!(
+            target.command,
+            vec!["heph-deploy".to_string(), "--env".into(), "staging".into()]
+        );
+        assert_eq!(target.timeout_secs, DEFAULT_DEPLOY_TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn duplicate_target_names_rejected() {
+        let (_dir, path) = write_tmp(&format!("{STAGING_TARGET}{STAGING_TARGET}"));
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert!(err.to_string().contains("duplicate name"), "got: {err}");
+    }
+
+    #[test]
+    fn target_without_verify_hooks_rejected() {
+        let body =
+            "[[deployment.targets]]\nname = \"prod\"\ncommand = [\"deploy.sh\"]\nverify = []\n";
+        let (_dir, path) = write_tmp(body);
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert!(err.to_string().contains("simulation risk"), "got: {err}");
+    }
+
+    #[test]
+    fn target_path_like_program_rejected() {
+        let body = "[[deployment.targets]]\nname = \"prod\"\n\
+             command = [\"/bin/sh\", \"-c\", \"ship it\"]\n\
+             verify = [[\"probe-ok\"]]\n";
+        let (_dir, path) = write_tmp(body);
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert!(
+            err.to_string().contains("bare executable name"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn target_timeout_out_of_bounds_rejected() {
+        let body = "[[deployment.targets]]\nname = \"prod\"\ncommand = [\"heph-deploy\"]\n\
+             verify = [[\"heph-probe\"]]\ntimeout_secs = 2\n";
+        let (_dir, path) = write_tmp(body);
+        let err = Config::load(Some(&path), no_env).unwrap_err();
+        assert!(err.to_string().contains("timeout_secs"), "got: {err}");
     }
 
     #[test]

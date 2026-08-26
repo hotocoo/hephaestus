@@ -19,6 +19,7 @@
 //! recorded external decision.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
@@ -32,6 +33,7 @@ use hephaestus_db::Db;
 use hephaestus_tools::SandboxedShell;
 
 use crate::analysis::{StageError, WorkspaceLayout, chain_job};
+use crate::deployment::DeploymentSettings;
 use crate::jobs::{JobPayload, Queue};
 use crate::worker::{HandlerOutcome, JobHandler};
 
@@ -301,19 +303,32 @@ async fn fail_run(
     Ok(())
 }
 
-/// Route a successful build to its next legal hop.
+/// Route a successful build to its next legal hop: complete via
+/// skip-deployment when the plan leaves deployment unset; otherwise
+/// bootstrap the deployment row and chain the deploy job (ADR-013).
+///
+/// Every step re-derives its necessity from visible state, so a crash
+/// anywhere in here replays cleanly through a redelivered build job.
 async fn route_built_change(
     db: &Db,
     org: OrganizationId,
     task: TaskId,
     run: WorkflowRunId,
-    execution: hephaestus_db::execution::ExecutionRow,
+    build: hephaestus_db::delivery::BuildRow,
+    deployments: Option<&DeploymentSettings>,
 ) -> std::result::Result<(), StageError> {
     let plan = db
         .get_current_plan(org, task)
         .await
         .map_err(StageError::Permanent)?
         .ok_or_else(|| StageError::Permanent(Error::NotFound { entity: "plan" }))?;
+    let execution = db
+        .get_execution(
+            org,
+            hephaestus_core::id::ExecutionId::from_uuid(build.execution_id),
+        )
+        .await
+        .map_err(StageError::Permanent)?;
     if plan.id.as_uuid() != execution.plan_id {
         return Err(StageError::Permanent(Error::Validation {
             field: "plan".into(),
@@ -321,40 +336,120 @@ async fn route_built_change(
         }));
     }
 
-    if wants_deployment(&plan.strategy) {
-        // Loud, honest refusal: no deployment executor exists yet, so
-        // claiming completion would be simulation (ADR-008).
+    if !wants_deployment(&plan.strategy) {
+        db.transition_run(
+            org,
+            run,
+            WorkflowState::Building,
+            TransitionEvent::SkipDeployment,
+            "build-handler",
+        )
+        .await
+        .map_err(StageError::Retryable)?;
+        return Ok(());
+    }
+
+    // The plan demands a deployment. Without configured targets that is
+    // still the loud ADR-008 refusal - claiming completion would be
+    // simulation, and so would inventing a target.
+    let Some(settings) = deployments else {
         fail_run(db, org, run).await?;
         return Err(StageError::Permanent(Error::Validation {
             field: "strategy.deployment".into(),
-            message:
-                "plan demands a deployment but no deployment executor exists yet;                  the built change set is preserved as evidence"
-                    .into(),
+            message: "plan demands a deployment but no deployment executor exists;                  the built change set is preserved as evidence"
+                .into(),
         }));
-    }
+    };
+    let note = plan.strategy.deployment.as_deref().unwrap_or("").trim();
+    let Some(target) = settings.resolve(note) else {
+        fail_run(db, org, run).await?;
+        return Err(StageError::Permanent(Error::Validation {
+            field: "strategy.deployment".into(),
+            message: format!(
+                "plan names deployment target {note:?} but configuration has: {}",
+                settings.names()
+            ),
+        }));
+    };
 
-    db.transition_run(
-        org,
+    // Bootstrap BEFORE the transition (mirroring builds and
+    // executions): creation is idempotent per run, so a crash here
+    // replays cleanly through this function.
+    db.create_deployment_for_build(org, task, run, BuildId::from_uuid(build.id), &target.name)
+        .await
+        .map_err(StageError::Permanent)?;
+    // Building -> Deploying. A Conflict means another redelivery won
+    // the race and advanced already; its effects are exactly ours.
+    if let Err(e) = db
+        .transition_run(
+            org,
+            run,
+            WorkflowState::Building,
+            TransitionEvent::BuildSucceeded,
+            "build-handler",
+        )
+        .await
+        && !matches!(e, Error::Conflict { .. })
+    {
+        return Err(StageError::Retryable(e));
+    }
+    chain_deploy_job(db, task, run)
+        .await
+        .map_err(StageError::Retryable)?;
+    Ok(())
+}
+
+/// Enqueue the deployment job; the key makes redelivery a no-op.
+/// `chain_job` appends the run id, so the durable key reads
+/// `deploy:<run>`.
+async fn chain_deploy_job(db: &Db, task: TaskId, run: WorkflowRunId) -> Result<()> {
+    chain_job(
+        db,
+        Queue::Deployment.as_str(),
+        "deploy",
         run,
-        WorkflowState::Building,
-        TransitionEvent::SkipDeployment,
-        "build-handler",
+        JobPayload::DeployChangeSet {
+            task_id: task,
+            run_id: run,
+        },
     )
     .await
-    .map_err(StageError::Retryable)?;
-    Ok(())
 }
 
 async fn build(
     db: &Db,
     layout: &WorkspaceLayout,
+    deployments: Option<&DeploymentSettings>,
     task_id: TaskId,
     run_id: WorkflowRunId,
 ) -> std::result::Result<(), StageError> {
     let scope = db.run_scope(run_id).await.map_err(StageError::Permanent)?;
     let org = scope.organization_id;
+    // Stale redelivery after any terminal hop is absorbed silently.
+    if matches!(
+        scope.state,
+        WorkflowState::Completed | WorkflowState::Failed | WorkflowState::Cancelled
+    ) {
+        return Ok(());
+    }
+    // Crash after BuildSucceeded: the build is durable, so re-drive
+    // only the interrupted routing instead of rebuilding or dying.
+    if matches!(
+        scope.state,
+        WorkflowState::Deploying | WorkflowState::VerifyingDeployment
+    ) {
+        let latest = db
+            .latest_build_for_run(org, run_id)
+            .await
+            .map_err(StageError::Permanent)?
+            .ok_or_else(|| {
+                StageError::Permanent(Error::Conflict {
+                    message: "post-build run without any build row".into(),
+                })
+            })?;
+        return route_built_change(db, org, task_id, run_id, latest, deployments).await;
+    }
     match scope.state {
-        WorkflowState::Completed => return Ok(()), // stale redelivery after skip-deployment
         WorkflowState::Building => {}
         other => {
             return Err(StageError::Permanent(Error::Conflict {
@@ -362,15 +457,28 @@ async fn build(
             }));
         }
     }
-    let row = db
-        .active_build_for_run(org, run_id)
-        .await
-        .map_err(StageError::Permanent)?
-        .ok_or_else(|| {
-            StageError::Permanent(Error::Conflict {
-                message: "run is building without an active build row".into(),
-            })
-        })?;
+    let row = match db.active_build_for_run(org, run_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            // A crash may have landed between finishing the build and
+            // routing it; a succeeded row means only routing remains.
+            let latest = db
+                .latest_build_for_run(org, run_id)
+                .await
+                .map_err(StageError::Permanent)?;
+            match latest {
+                Some(latest) if latest.status == "succeeded" => {
+                    return route_built_change(db, org, task_id, run_id, latest, deployments).await;
+                }
+                _ => {
+                    return Err(StageError::Permanent(Error::Conflict {
+                        message: "run is building without an active build row".into(),
+                    }));
+                }
+            }
+        }
+        Err(e) => return Err(StageError::Permanent(e)),
+    };
     let build_id = BuildId::from_uuid(row.id);
 
     // Verifier capabilities: read + allowlisted cargo. The change set
@@ -400,14 +508,6 @@ async fn build(
         }));
     }
 
-    let execution = db
-        .get_execution(
-            org,
-            hephaestus_core::id::ExecutionId::from_uuid(row.execution_id),
-        )
-        .await
-        .map_err(StageError::Permanent)?;
-
     let artifact_dir = workspace.join(ARTIFACT_DIR);
     let (sha, files) = hash_artifacts(&artifact_dir).map_err(StageError::Retryable)?;
     let artifact_path = if files == 0 { None } else { Some(ARTIFACT_DIR) };
@@ -415,18 +515,40 @@ async fn build(
         .await
         .map_err(StageError::Permanent)?;
 
-    route_built_change(db, org, task_id, run_id, execution).await
+    // Re-read the row so routing sees its terminal, evidence-grade form.
+    let finished = db
+        .latest_build_for_run(org, run_id)
+        .await
+        .map_err(StageError::Permanent)?
+        .ok_or_else(|| {
+            StageError::Permanent(Error::Conflict {
+                message: "build row vanished after finishing".into(),
+            })
+        })?;
+    route_built_change(db, org, task_id, run_id, finished, deployments).await
 }
 
 /// Handler for the build stage of the delivery pipeline.
 pub struct BuildHandler {
     layout: WorkspaceLayout,
+    deployments: Option<Arc<DeploymentSettings>>,
 }
 
 impl BuildHandler {
-    /// Bind the workspace layout.
+    /// Bind the workspace layout. Without deployment settings a plan
+    /// demanding deployment fails loudly (ADR-008 semantics).
     pub fn new(layout: WorkspaceLayout) -> Self {
-        Self { layout }
+        Self {
+            layout,
+            deployments: None,
+        }
+    }
+
+    /// Configure deployment targets (ADR-013). Absent settings keep
+    /// the loud no-executor refusal for runs that demand deployment.
+    pub fn with_deployments(mut self, settings: Arc<DeploymentSettings>) -> Self {
+        self.deployments = Some(settings);
+        self
     }
 }
 
@@ -441,7 +563,15 @@ impl JobHandler for BuildHandler {
                 tracing::error!(?payload, "build handler received wrong payload kind");
                 return HandlerOutcome::FailedPermanent;
             };
-            match build(&db, &self.layout, task_id, run_id).await {
+            match build(
+                &db,
+                &self.layout,
+                self.deployments.as_deref(),
+                task_id,
+                run_id,
+            )
+            .await
+            {
                 Ok(()) => HandlerOutcome::Completed,
                 Err(StageError::Retryable(e)) => {
                     tracing::warn!(run = %run_id, error = %e, "build retryable failure");

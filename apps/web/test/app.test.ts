@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createMemoryHistory, createRouter } from "vue-router";
 import App from "../src/App.vue";
+import RunDetailView from "../src/views/RunDetailView.vue";
 import SetupView from "../src/views/SetupView.vue";
 import TaskDetailView from "../src/views/TaskDetailView.vue";
 import {
   FakeControlPlane,
   PROJECT_ID,
   REPO_ID,
+  RUN_ID,
   TASK_ID,
+  sampleDeployment,
   sampleRun,
   sampleTask,
 } from "./fakes";
@@ -31,6 +34,35 @@ async function mountApp(client: FakeControlPlane) {
     ],
   });
   await router.push("/tasks/" + TASK_ID);
+  await router.isReady();
+  const wrapper = mount(App, {
+    props: { client },
+    global: { plugins: [router] },
+  });
+  await flushPromises();
+  return wrapper;
+}
+
+/** Mount the real shell on the run-detail route (App owns the client). */
+async function mountRunDetail(client: FakeControlPlane) {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: "/", name: "overview", component: { template: "<div />" } },
+      { path: "/tasks", name: "tasks", component: { template: "<div />" } },
+      {
+        path: "/tasks/:taskId",
+        name: "task-detail",
+        component: TaskDetailView,
+      },
+      {
+        path: "/runs/:runId",
+        name: "run-detail",
+        component: RunDetailView,
+      },
+    ],
+  });
+  await router.push("/runs/" + RUN_ID);
   await router.isReady();
   const wrapper = mount(App, {
     props: { client },
@@ -109,5 +141,38 @@ describe("intake through the app", () => {
     const replay = await client.submitTask(input, { idempotencyKey: "key-123" });
     expect(replay.deduplicated).toBe(true);
     expect(replay.task_id).toBe(receipt.task_id);
+  });
+});
+
+describe("run detail deployment panel", () => {
+  it("renders a recorded deployment as data and hides absence", async () => {
+    const client = new FakeControlPlane();
+    // The fake pre-seeds one succeeded staging deployment for RUN_ID.
+    const wrapper = await mountRunDetail(client);
+    const text = wrapper.text();
+    expect(text).toContain("Deployment");
+    expect(text).toContain("staging");
+    expect(text).toContain("succeeded");
+    wrapper.unmount();
+
+    // A run that never deployed shows no panel and no fabricated data.
+    const quiet = new FakeControlPlane();
+    quiet.deploymentsByRun.delete(RUN_ID);
+    const emptyWrapper = await mountRunDetail(quiet);
+    expect(emptyWrapper.text()).not.toContain("staging");
+    emptyWrapper.unmount();
+
+    // Failures surface their persisted reason verbatim.
+    const failed = new FakeControlPlane();
+    failed.deploymentsByRun.set(
+      RUN_ID,
+      sampleDeployment({ status: "failed", failure_reason: "heph-deploy failed (exit_code=Some(3))" }),
+    );
+    const failedWrapper = await mountRunDetail(failed);
+    expect(failedWrapper.text()).toContain("failed");
+    expect(failedWrapper.text()).toContain("heph-deploy failed (exit_code=Some(3))");
+    failedWrapper.unmount();
+
+    void sampleRun;
   });
 });
