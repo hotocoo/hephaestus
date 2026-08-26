@@ -79,6 +79,12 @@ Currently working end-to-end:
   workers that serve model-backed queues; queue sets are validated
   fail-closed at load, and the unservable `deployment` queue is
   refused outright until a real executor exists
+* Web contract surface (ADR-011): the API serves its own OpenAPI 3.1
+  document at `/api/v1/openapi.json`; the TypeScript workspace mirrors
+  it twice and proves both mirrors against the live server -
+  `@hephaestus/contracts` (strict zod schemas over real responses) and
+  `@hephaestus/sdk` (a typed client whose declarations are regenerated
+  from the served document in CI, byte-compared to catch drift)
 
 ## Architecture (in progress)
 
@@ -137,6 +143,25 @@ cargo run -p hephaestus-worker --bin hephaestus-worker
 Workers serve only deterministic queues by default; serving planning,
 implementation or review additionally requires `[model]` provider
 settings (see [`.env.example`](.env.example)).
+
+### Web tier
+
+The TypeScript packages live under `packages/` (pnpm 11, Node 22+).
+Their tests are conformance suites: they spawn the real server binary,
+so build it first and point them at a test database.
+
+```bash
+cargo build -p hephaestus-api --bin hephaestus-server
+HEPHAESTUS_TEST_DATABASE_URL=postgres://localhost/hephaestus_test \
+  pnpm install && pnpm -r typecheck && pnpm -r lint && pnpm -r test
+
+# Regenerate the SDK's types from the served OpenAPI document:
+HEPHAESTUS_TEST_DATABASE_URL=postgres://localhost/hephaestus_test \
+  pnpm --filter @hephaestus/sdk generate
+```
+
+A drift test fails CI whenever the committed `openapi.d.ts` differs
+from what the serving API would generate (ADR-002, ADR-011).
 
 Configuration precedence: built-in defaults -> TOML file -> environment
 (`HEPHAESTUS_` prefix). See [`.env.example`](.env.example).

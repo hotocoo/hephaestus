@@ -1,0 +1,25 @@
+{
+  "name": "@hephaestus/sdk",
+  "version": "0.1.0",
+  "description": "Typed TypeScript client for the Hephaestus control-plane API, generated from the served OpenAPI document (ADR-002, ADR-011).",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@hephaestus/eslint-config": "workspace:*",
+    "@hephaestus/contracts": "workspace:*",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.30.0",
+    "openapi-typescript": "^7.8.0",
+    "typescript": "~5.8.3",
+    "vitest": "^3.2.0"
+  }
+}

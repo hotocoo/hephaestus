@@ -1,0 +1,15 @@
+{
+  "name": "hephaestus-web",
+  "private": true,
+  "description": "Hephaestus web tier: dashboard app and TypeScript packages.",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.7.0"
+}

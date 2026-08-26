@@ -1,0 +1,11 @@
+{
+  "name": "@hephaestus/eslint-config",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared flat ESLint configuration for Hephaestus TypeScript packages.",
+  "type": "module",
+  "main": "./index.js",
+  "dependencies": {
+    "typescript-eslint": "^8.35.0"
+  }
+}

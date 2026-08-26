@@ -41,10 +41,34 @@ jobs:
         run: cargo test --workspace
 
   web:
-    name: Web - typecheck, lint, test
+    name: Web - typecheck, lint, conformance
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: hephaestus
+          POSTGRES_PASSWORD: hephaestus
+          POSTGRES_DB: hephaestus_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      HEPHAESTUS_TEST_DATABASE_URL: postgres://hephaestus:hephaestus@localhost:5432/hephaestus_test
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: web-tier
+      # Conformance and drift tests spawn the real server binary; the
+      # web tier is only honest when it validates against the live API.
+      - name: Build control-plane server binary
+        run: cargo build -p hephaestus-api --bin hephaestus-server
       - uses: pnpm/action-setup@v4
         with:
           version: 11
@@ -52,20 +76,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      # The web workspace lands with Phase 9; this job activates when
-      # pnpm-workspace.yaml exists. Kept green by construction until then.
-      - name: Check for web workspace
-        id: web
-        run: echo "exists=$([ -f pnpm-workspace.yaml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - name: Install dependencies
-        if: steps.web.outputs.exists == 'true'
         run: pnpm install --frozen-lockfile
       - name: Typecheck
-        if: steps.web.outputs.exists == 'true'
         run: pnpm -r typecheck
       - name: Lint
-        if: steps.web.outputs.exists == 'true'
         run: pnpm -r lint
-      - name: Test
-        if: steps.web.outputs.exists == 'true'
+      - name: Test (live conformance included)
         run: pnpm -r test

@@ -1,0 +1,27 @@
+{
+  "name": "@hephaestus/contracts",
+  "version": "0.1.0",
+  "description": "Zod mirrors of the Hephaestus control-plane wire contract, validated against the live API by conformance tests (ADR-002, ADR-011).",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/server.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "pg": "^8.16.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@hephaestus/eslint-config": "workspace:*",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.15.0",
+    "eslint": "^9.30.0",
+    "typescript": "~5.8.3",
+    "vitest": "^3.2.0"
+  }
+}

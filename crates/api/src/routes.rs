@@ -54,13 +54,20 @@ pub fn router(state: AppState) -> Router {
         ))
         .with_state(state.clone());
 
+    // The machine-readable contract is public but lives under the
+    // versioned prefix, so it nests beside (not inside) the
+    // authenticated surface and carries no auth layer of its own.
+    let contract = Router::new()
+        .route("/openapi.json", get(crate::openapi::serve_document))
+        .with_state(state.clone());
+
     let probes = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .with_state(state.clone());
 
     probes
-        .nest("/api/v1", protected)
+        .nest("/api/v1", contract.merge(protected))
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(state.max_body_bytes))
 }

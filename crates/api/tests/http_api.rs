@@ -188,6 +188,23 @@ async fn disabled_auth_still_requires_explicit_tenant() {
     assert_eq!(status, StatusCode::OK);
 }
 
+/// The served document must be byte-identical to the builder: there
+/// is no separately-maintained spec file to drift from.
+#[tokio::test(flavor = "multi_thread")]
+async fn served_contract_matches_the_builder() {
+    let _guard = SERIAL.lock().await;
+    let db = test_db().await;
+    let app = app_with(&db, vec![], false);
+    let empty: &[(&str, &str)] = &[];
+    let (status, body) = send(app, "GET", "/api/v1/openapi.json", empty, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        serde_json::to_value(hephaestus_api::openapi::openapi_document())
+            .expect("document is json")
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn intake_is_idempotent_and_validates_input() {
     let _guard = SERIAL.lock().await;
