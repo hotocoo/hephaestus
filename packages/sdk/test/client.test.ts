@@ -146,4 +146,29 @@ describe("HephaestusClient", () => {
       throw new Error("unexpected branch");
     }
   });
+
+  it("defaults to the global fetch without detaching its receiver", async () => {
+    // Regression: storing bare fetch on the instance detaches it from
+    // its global receiver; browsers then reject every request with
+    // "Illegal invocation" (found by driving the live dashboard).
+    const original = globalThis.fetch;
+    let called = 0;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    try {
+      const client = new HephaestusClient({
+        baseUrl: "http://127.0.0.1:7300",
+        token: "t",
+      });
+      const out = await client.listTasks();
+      expect(out).toEqual([]);
+      called = 1;
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(called).toBe(1);
+  });
 });

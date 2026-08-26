@@ -112,7 +112,12 @@ export class HephaestusClient {
   constructor(options: HephaestusClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.token = options.token;
-    this.transport = options.fetchImpl ?? fetch;
+    // Native fetch throws "Illegal invocation" when invoked detached
+    // from its global receiver, so the default transport routes through
+    // a wrapper instead of storing the bare function.
+    this.transport =
+      options.fetchImpl ??
+      ((input, init) => globalThis.fetch(input, init));
   }
 
   private async request<T>(
