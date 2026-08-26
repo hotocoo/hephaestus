@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Hephaestus</title>
+    <!--
+      Runtime configuration is read once at boot from this global
+      (see src/config.ts). Deployments set credentials here; the app
+      fails closed into its setup screen when it is absent.
+    -->
+    <script>
+      window.__HEPHAESTUS_WEB_CONFIG__ = window.__HEPHAESTUS_WEB_CONFIG__ ?? {};
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

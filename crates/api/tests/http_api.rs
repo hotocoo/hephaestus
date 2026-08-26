@@ -691,3 +691,112 @@ async fn plan_approval_gate_decides_and_replays_through_the_api() {
     });
     assert!(approved, "approve transition missing from events: {events}");
 }
+
+/// The task->run lookup resolves the current run without knowing its
+/// id - the dashboard's path from a task to live workflow state. It
+/// stays tenant-scoped and honest about missing rows.
+#[tokio::test(flavor = "multi_thread")]
+async fn task_run_lookup_resolves_current_run() {
+    let _guard = SERIAL.lock().await;
+    let db = test_db().await;
+    let (org_a, proj_a, repo_a) = seed_tenant(&db).await;
+    let (org_b, _proj_b, _repo_b) = seed_tenant(&db).await;
+
+    let app = app_with(
+        &db,
+        vec![
+            key_for(TOKEN_A, org_a, "tester-a"),
+            key_for(TOKEN_B, org_b, "tester-b"),
+        ],
+        false,
+    );
+    let auth_a = [bearer(TOKEN_A)];
+    let auth_b = [bearer(TOKEN_B)];
+
+    // Unknown and malformed ids fail with the shared shape.
+    let missing = uuid::Uuid::now_v7().to_string();
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        &format!("/api/v1/tasks/{missing}/run"),
+        &auth_a,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "NOT_FOUND");
+
+    let empty: &[(&str, &str)] = &[];
+    let (status, _body) = send(
+        app.clone(),
+        "GET",
+        "/api/v1/tasks/not-a-uuid/run",
+        empty,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        "/api/v1/tasks/not-a-uuid/run",
+        &auth_a,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["field"], "task_id");
+
+    // Submit real work; the receipt's run is what the lookup returns.
+    let payload = json!({
+        "title": "Wire the run lookup",
+        "description": "The dashboard needs a path from task to run.",
+        "project_id": proj_a.as_uuid(),
+        "repository_id": repo_a.as_uuid(),
+    });
+    let (status, receipt) =
+        send(app.clone(), "POST", "/api/v1/tasks", &auth_a, Some(payload)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let task_uri = format!("/api/v1/tasks/{}", receipt["task_id"].as_str().unwrap());
+
+    let (status, run) = send(
+        app.clone(),
+        "GET",
+        &format!("{task_uri}/run"),
+        &auth_a,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(run["id"], receipt["run_id"]);
+    assert_eq!(run["task_id"], receipt["task_id"]);
+    assert_eq!(run["state"], "created");
+
+    // The lookup follows transitions like any other run read.
+    seed_to_awaiting_approval(
+        &db,
+        org_a,
+        hephaestus_core::id::TaskId::from_uuid(
+            uuid::Uuid::parse_str(receipt["task_id"].as_str().unwrap()).expect("task uuid"),
+        ),
+        hephaestus_core::id::WorkflowRunId::from_uuid(
+            uuid::Uuid::parse_str(receipt["run_id"].as_str().unwrap()).expect("run uuid"),
+        ),
+    )
+    .await;
+    let (_status, run) = send(
+        app.clone(),
+        "GET",
+        &format!("{task_uri}/run"),
+        &auth_a,
+        None,
+    )
+    .await;
+    assert_eq!(run["state"], "awaiting_approval");
+
+    // Another tenant gets the same answer as everyone else: nothing.
+    let (status, body) = send(app, "GET", &format!("{task_uri}/run"), &auth_b, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "NOT_FOUND");
+}

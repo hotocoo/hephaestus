@@ -187,6 +187,11 @@ export class HephaestusClient {
     return this.request("GET", "/api/v1/tasks/" + idSegment(taskId) + "/plan");
   }
 
+  /** Current workflow run of a task; the path from task to live state. */
+  async getTaskRun(taskId: string): Promise<Run> {
+    return this.request("GET", "/api/v1/tasks/" + idSegment(taskId) + "/run");
+  }
+
   async getRun(runId: string): Promise<Run> {
     return this.request("GET", "/api/v1/runs/" + idSegment(runId));
   }

@@ -21,7 +21,7 @@ pub const OPENAPI_VERSION: &str = "3.1.0";
 /// Canonical `(method, path)` inventory of every operation the
 /// document describes. Tests pin the actual router against exactly
 /// this list so an undocumented route or a stale entry fails loudly.
-pub const OPERATIONS: [(&str, &str); 15] = [
+pub const OPERATIONS: [(&str, &str); 16] = [
     ("GET", "/healthz"),
     ("GET", "/readyz"),
     ("GET", "/api/v1/openapi.json"),
@@ -29,6 +29,7 @@ pub const OPERATIONS: [(&str, &str); 15] = [
     ("GET", "/api/v1/tasks"),
     ("GET", "/api/v1/tasks/{task_id}"),
     ("GET", "/api/v1/tasks/{task_id}/plan"),
+    ("GET", "/api/v1/tasks/{task_id}/run"),
     ("GET", "/api/v1/projects"),
     ("GET", "/api/v1/repositories"),
     ("GET", "/api/v1/runs/{run_id}"),
@@ -133,6 +134,19 @@ pub fn openapi_document() -> Value {
                     ("200", ok_json("The current plan; earlier plans were superseded.", sref("Plan"))),
                     ("401", error("Missing or unknown bearer token.")),
                     ("404", error("No plan exists yet, or the task does not exist in the caller's organization.")),
+                    ("422", error("The id is not a UUID.")),
+                ]),
+            )
+            .into(),
+            ("GET", "/api/v1/tasks/{task_id}/run") => protected_operation(
+                "getTaskRun",
+                "Fetch the current workflow run of a task",
+                &["Runs"],
+                json!([]),
+                response_map(&[
+                    ("200", ok_json("The task's current run with its workflow state.", sref("RunResponse"))),
+                    ("401", error("Missing or unknown bearer token.")),
+                    ("404", error("No run exists for the task yet, or the task does not exist in the caller's organization.")),
                     ("422", error("The id is not a UUID.")),
                 ]),
             )

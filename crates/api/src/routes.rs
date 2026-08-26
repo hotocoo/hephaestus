@@ -40,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         .route("/tasks", post(create_task).get(list_tasks))
         .route("/tasks/{task_id}", get(get_task))
         .route("/tasks/{task_id}/plan", get(get_task_plan))
+        .route("/tasks/{task_id}/run", get(get_task_run))
         .route("/runs/{run_id}", get(get_run))
         .route("/runs/{run_id}/events", get(list_run_events))
         .route(
@@ -230,6 +231,23 @@ async fn get_task_plan(
         .await?
         .ok_or(Error::NotFound { entity: "plan" })?;
     Ok(Json(plan))
+}
+
+/// The current workflow run of a task; the dashboard's path from a
+/// task page to its live state without knowing the run id.
+async fn get_task_run(
+    State(state): State<AppState>,
+    Authed(principal): Authed,
+    Path(task_id): Path<String>,
+) -> ApiResult<Json<RunResponse>> {
+    let row = state
+        .db
+        .get_run_for_task(
+            principal.organization_id,
+            TaskId::from_uuid(id_of(&task_id, "task_id")?),
+        )
+        .await?;
+    Ok(Json(row.into()))
 }
 
 async fn get_run(

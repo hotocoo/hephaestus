@@ -19,6 +19,7 @@ export const OPERATIONS: readonly OperationDescriptor[] = [
   { method: "GET", path: "/api/v1/tasks", operationId: "listTasks" },
   { method: "GET", path: "/api/v1/tasks/{task_id}", operationId: "getTask" },
   { method: "GET", path: "/api/v1/tasks/{task_id}/plan", operationId: "getTaskPlan" },
+  { method: "GET", path: "/api/v1/tasks/{task_id}/run", operationId: "getTaskRun" },
   { method: "GET", path: "/api/v1/projects", operationId: "listProjects" },
   { method: "GET", path: "/api/v1/repositories", operationId: "listRepositories" },
   { method: "GET", path: "/api/v1/runs/{run_id}", operationId: "getRun" },

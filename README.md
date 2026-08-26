@@ -158,6 +158,14 @@ HEPHAESTUS_TEST_DATABASE_URL=postgres://localhost/hephaestus_test \
 # Regenerate the SDK's types from the served OpenAPI document:
 HEPHAESTUS_TEST_DATABASE_URL=postgres://localhost/hephaestus_test \
   pnpm --filter @hephaestus/sdk generate
+
+# Run the dashboard against a local control plane (Vite proxies /api):
+HEPHAESTUS_TEST_DATABASE_URL=postgres://localhost/hephaestus_test \
+  pnpm --filter @hephaestus/web test
+pnpm --filter @hephaestus/web dev
+
+# The dashboard reads credentials at runtime from window.__HEPHAESTUS_WEB_CONFIG__
+# (see apps/web/index.html); without a token it renders its setup screen.
 ```
 
 A drift test fails CI whenever the committed `openapi.d.ts` differs

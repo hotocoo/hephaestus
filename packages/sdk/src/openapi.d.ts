@@ -209,6 +209,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tasks/{task_id}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Entity identifier; must be a UUID. */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        /** Fetch the current workflow run of a task */
+        get: operations["getTaskRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -1021,6 +1041,56 @@ export interface operations {
                 };
             };
             /** @description No plan exists yet, or the task does not exist in the caller's organization. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The id is not a UUID. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getTaskRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Entity identifier; must be a UUID. */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The task's current run with its workflow state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunResponse"];
+                };
+            };
+            /** @description Missing or unknown bearer token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No run exists for the task yet, or the task does not exist in the caller's organization. */
             404: {
                 headers: {
                     [name: string]: unknown;

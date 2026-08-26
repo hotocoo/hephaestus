@@ -68,6 +68,32 @@ impl Db {
         })
     }
 
+    /// Fetch the current run of a task, scoped by organization.
+    ///
+    /// Intake bootstraps exactly one run per task; ordering by id keeps
+    /// the answer deterministic even if that invariant is ever relaxed,
+    /// because ids are UUIDv7 and therefore time-ordered.
+    pub async fn get_run_for_task(
+        &self,
+        org: OrganizationId,
+        task: TaskId,
+    ) -> Result<WorkflowRunRow> {
+        sqlx::query_as::<_, WorkflowRunRow>(
+            "SELECT id, task_id, organization_id, state, attempt, correlation_id,
+                    lease_owner, lease_expires_at, last_transition_at
+             FROM workflow_runs WHERE task_id = $1 AND organization_id = $2
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(task.as_uuid())
+        .bind(org.as_uuid())
+        .fetch_optional(self.pool())
+        .await
+        .map_err(crate::map_sqlx)?
+        .ok_or(Error::NotFound {
+            entity: "workflow_run",
+        })
+    }
+
     /// Apply a legal transition with optimistic concurrency:
     /// succeeds only if the row is still in \`expected\`.
     ///
