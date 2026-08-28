@@ -37,3 +37,4 @@ Thumbs.db
 # Coverage / profiling
 *.profraw
 lcov.info
+.gstack/
