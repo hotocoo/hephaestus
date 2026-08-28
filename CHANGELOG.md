@@ -8,6 +8,38 @@ until the 1.0 API contract freezes (its own ADR, to come).
 
 ### Fixed
 
+- Dashboard: a run parked in one non-terminal state for an unusually
+  long stretch now renders an unmistakable stall hint - the workflow
+  timeline's current step carries its compact transition time and
+  relative age, and past a 30-minute dwell an amber notice states the
+  exact since-time and suggests checking for a worker serving the next
+  queue. Previously a task stuck in `analyzing` for two days looked
+  exactly like healthy work in flight. The server stays the sole
+  authority on run health; the hint only makes the recorded time
+  impossible to miss (pinned by unit tests for the dwell heuristic).
+- Dashboard: the run detail view was orphaned - nothing in the
+  interface linked to `/runs/:runId`, so it was reachable only by
+  typing the URL. The task detail page's workflow panel now links to
+  the run that owns it (component test asserts the link).
+- Dashboard: table rows on the overview and task list were clickable
+  only by mouse (`@click` on the `<tr>`); the title is now a real
+  link, so keyboard and assistive-tech users can open a task.
+- Dashboard: horizontal overflow on phone-width viewports. The
+  panel grid floored every column at 320px and the timeline's
+  timestamp column could not shrink, so at 375px the whole page
+  scrolled sideways; panels now stack full-width below 480px and the
+  timestamp shrinks then wraps instead of forcing width (verified
+  against the live deployment: no page exceeds the viewport).
+- Dashboard: per-task run lookups swallowed every error as "no run";
+  only a 404 means the run is not bootstrapped yet, and any other
+  failure now surfaces instead of masquerading as absence.
+- Dashboard: gate decisions gave no feedback while in flight beyond
+  disabled buttons; the buttons now read "sending…"/"recording…".
+- Dashboard: the overview's Tasks stat could read as a total; it is
+  labeled as covering the most recent page.
+
+### Added
+
 - Queue routing: requirement-extraction jobs were chained onto the
   `analysis` queue instead of `planning`. Model-capable workers
   (the only ones holding an extraction handler) poll `planning` and

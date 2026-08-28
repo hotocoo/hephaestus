@@ -31,6 +31,7 @@ async function mountApp(client: FakeControlPlane) {
         name: "task-detail",
         component: TaskDetailView,
       },
+      { path: "/runs/:runId", name: "run-detail", component: { template: "<div />" } },
     ],
   });
   await router.push("/tasks/" + TASK_ID);
@@ -93,6 +94,12 @@ describe("task detail flow", () => {
     expect(text).toContain("Approve plan");
     expect(text).toContain("computed");
     expect(text).toContain("awaiting_approval");
+
+    // The workflow panel links to the run's own view - the run detail
+    // page is reachable from the task that owns it, not orphaned.
+    const runLink = wrapper.findAll("a").find((a) => a.text().includes("run view"));
+    expect(runLink?.attributes("href")).toContain("/runs/");
+
     wrapper.unmount();
   });
   it("forwards an approval decision through the client and refreshes", async () => {

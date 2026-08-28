@@ -23,6 +23,24 @@ export function formatDateTime(iso: string): string {
 }
 
 /**
+ * Compact variant for tight columns (the workflow timeline's current
+ * step): drops the year when it is the current one and the seconds,
+ * so the timestamp fits without forcing horizontal overflow.
+ */
+export function formatDateTimeCompact(iso: string, now: number = Date.now()): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const sameYear = date.getFullYear() === new Date(now).getFullYear();
+  return date.toLocaleString(undefined, {
+    ...(sameYear ? {} : { year: "numeric" }),
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/**
  * Compact age like "3m ago"; recomputed on each call so views can
  * refresh it on their poll cycle. Future timestamps render as "now".
  */

@@ -9,7 +9,7 @@
 import { computed } from "vue";
 import { PhFlame, PhFolderOpen } from "@phosphor-icons/vue";
 import type { Run, Task } from "@hephaestus/sdk";
-import { useControlPlane } from "@/api/client";
+import { useControlPlane, notFoundToNull } from "@/api/client";
 import { useAsyncResource } from "@/composables/useAsyncResource";
 import { useCatalog } from "@/composables/useCatalog";
 import { usePolling } from "@/composables/usePolling";
@@ -34,12 +34,13 @@ const recentTasks = computed<Task[]>(() =>
 
 /**
  * Current run per recent task; a missing row (run not bootstrapped
- * yet) simply renders no state pill.
+ * yet) simply renders no state pill. Only a 404 counts as "no run" -
+ * any other failure surfaces instead of masquerading as absence.
  */
 const recentRuns = useAsyncResource(async () => {
   const current = recentTasks.value;
   const runs = await Promise.all(
-    current.map((task) => client.getTaskRun(task.id).catch(() => null)),
+    current.map((task) => client.getTaskRun(task.id).catch<Run | null>(notFoundToNull)),
   );
   const byTask = new Map<string, Run>();
   for (const [index, run] of runs.entries()) {
@@ -99,7 +100,7 @@ usePolling(reloadAll, loadConfig().pollSeconds);
       <span class="stat__label">Repositories</span>
       <div class="stat__value">{{ repositoryCount }}</div>
     </div>
-    <div class="stat">
+    <div class="stat" title="tasks on the most recent page (up to 200)">
       <span class="stat__label">Tasks</span>
       <div class="stat__value">{{ tasks.data.value?.length ?? "—" }}</div>
     </div>
@@ -184,7 +185,9 @@ usePolling(reloadAll, loadConfig().pollSeconds);
             @click="$router.push('/tasks/' + row.task.id)"
           >
             <td>
-              <div class="cell-title">{{ row.task.title }}</div>
+              <router-link :to="'/tasks/' + row.task.id" class="cell-title row-link">
+                {{ row.task.title }}
+              </router-link>
               <div class="cell-sub mono">{{ row.task.id.slice(0, 8) }}</div>
             </td>
             <td>

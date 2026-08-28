@@ -133,16 +133,16 @@ async function decideMerge(): Promise<void> {
         <template v-if="kind === 'approval'">
           <button class="btn btn--primary" :disabled="busy" @click="decideApproval(true)">
             <PhCheckCircle :size="16" aria-hidden="true" />
-            Approve plan
+            {{ busy ? "sending…" : "Approve plan" }}
           </button>
           <button class="btn btn--danger" :disabled="busy" @click="decideApproval(false)">
-            Reject plan
+            {{ busy ? "sending…" : "Reject plan" }}
           </button>
         </template>
         <template v-else>
           <button class="btn btn--primary" :disabled="busy" @click="decideMerge()">
             <PhGitMerge :size="16" aria-hidden="true" />
-            Record merge
+            {{ busy ? "recording…" : "Record merge" }}
           </button>
         </template>
       </div>

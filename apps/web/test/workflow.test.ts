@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   WORKFLOW_STATES,
+  isStaleState,
   isTerminalState,
   priorityRank,
   priorityTone,
@@ -34,6 +35,30 @@ describe("workflow spine", () => {
   it("knows terminal states", () => {
     expect(isTerminalState("completed")).toBe(true);
     expect(isTerminalState("implementing")).toBe(false);
+  });
+});
+
+describe("isStaleState", () => {
+  const NOW = Date.parse("2026-08-28T12:00:00Z");
+
+  it("flags a non-terminal state parked past the threshold", () => {
+    const twoDaysAgo = new Date(NOW - 2 * 24 * 60 * 60 * 1000).toISOString();
+    expect(isStaleState("analyzing", twoDaysAgo, NOW)).toBe(true);
+  });
+
+  it("keeps fresh non-terminal states quiet", () => {
+    const fiveMinutesAgo = new Date(NOW - 5 * 60 * 1000).toISOString();
+    expect(isStaleState("analyzing", fiveMinutesAgo, NOW)).toBe(false);
+  });
+
+  it("never flags terminal states - done is done, dead is dead", () => {
+    const twoDaysAgo = new Date(NOW - 2 * 24 * 60 * 60 * 1000).toISOString();
+    expect(isStaleState("completed", twoDaysAgo, NOW)).toBe(false);
+    expect(isStaleState("failed", twoDaysAgo, NOW)).toBe(false);
+  });
+
+  it("treats unreadable timestamps as not stale", () => {
+    expect(isStaleState("analyzing", "not-a-date", NOW)).toBe(false);
   });
 });
 

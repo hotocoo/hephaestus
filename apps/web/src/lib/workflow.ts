@@ -54,6 +54,21 @@ export function isTerminalState(state: string): boolean {
   return TERMINAL_OK.has(state) || TERMINAL_BAD.has(state);
 }
 
+/**
+ * A non-terminal state sitting longer than this reads as stalled and
+ * earns a visible attention hint. Purely presentational: the server
+ * remains the only authority on run health.
+ */
+export const STALE_STATE_MS = 30 * 60 * 1000;
+
+/** Whether a run has sat in a still-moveable state unusually long. */
+export function isStaleState(state: string, sinceIso: string, now: number = Date.now()): boolean {
+  if (isTerminalState(state)) return false;
+  const since = Date.parse(sinceIso);
+  if (Number.isNaN(since)) return false;
+  return now - since > STALE_STATE_MS;
+}
+
 function indexOfState(state: string): number {
   const index = WORKFLOW_STATES.indexOf(state as WorkflowState);
   return index === -1 ? WORKFLOW_STATES.length : index;

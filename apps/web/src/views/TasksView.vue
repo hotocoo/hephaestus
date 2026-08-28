@@ -8,7 +8,7 @@
  */
 import { computed } from "vue";
 import type { Run } from "@hephaestus/sdk";
-import { useControlPlane } from "@/api/client";
+import { useControlPlane, notFoundToNull } from "@/api/client";
 import { useAsyncResource } from "@/composables/useAsyncResource";
 import { useCatalog } from "@/composables/useCatalog";
 import { usePolling } from "@/composables/usePolling";
@@ -27,8 +27,10 @@ usePolling(tasks.reload, loadConfig().pollSeconds);
 
 const runs = useAsyncResource(async () => {
   const current = tasks.data.value ?? [];
+  // Only a 404 means "no run yet"; anything else must surface rather
+  // than render as absence.
   const fetched = await Promise.all(
-    current.map((task) => client.getTaskRun(task.id).catch(() => null)),
+    current.map((task) => client.getTaskRun(task.id).catch<Run | null>(notFoundToNull)),
   );
   const byTask = new Map<string, Run>();
   for (const [index, run] of fetched.entries()) {
@@ -132,7 +134,9 @@ function readLabels(value: unknown): string[] {
             @click="$router.push('/tasks/' + row.id)"
           >
             <td>
-              <div class="cell-title">{{ row.title }}</div>
+              <router-link :to="'/tasks/' + row.id" class="cell-title row-link">
+                {{ row.title }}
+              </router-link>
               <div class="cell-sub mono">{{ row.id.slice(0, 8) }}</div>
             </td>
             <td>{{ row.projectName }}</td>

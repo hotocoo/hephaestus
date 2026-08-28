@@ -6,7 +6,7 @@
  */
 import { computed } from "vue";
 import { useRoute } from "vue-router";
-import { PhCaretLeft, PhLinkBreak } from "@phosphor-icons/vue";
+import { PhCaretLeft, PhCaretRight, PhLinkBreak } from "@phosphor-icons/vue";
 import type { Gate, Plan, Run } from "@hephaestus/sdk";
 import { useControlPlane, notFoundToNull } from "@/api/client";
 import { useAsyncResource } from "@/composables/useAsyncResource";
@@ -146,7 +146,17 @@ function readLabels(value: unknown): string[] {
   <template v-if="!task.loading.value && !task.error.value && task.data.value !== null">
     <div class="panel-grid">
       <section class="panel" aria-label="workflow state">
-        <div class="panel__head"><h2>Workflow</h2></div>
+        <div class="panel__head">
+          <h2>Workflow</h2>
+          <router-link
+            v-if="runView !== null"
+            :to="'/runs/' + runView.id"
+            class="cell-sub"
+            style="display:inline-flex; align-items:center; gap:4px"
+          >
+            run view <PhCaretRight :size="11" aria-hidden="true" />
+          </router-link>
+        </div>
         <div class="panel__body">
           <template v-if="runView !== null">
             <StateTimeline :state="runView.state" :since="runView.since" />

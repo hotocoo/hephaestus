@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatAge, formatDateTime, renderPayload } from "../src/lib/format";
+import { formatAge, formatDateTime, formatDateTimeCompact, renderPayload } from "../src/lib/format";
 import { workflowTransition } from "../src/lib/events";
 
 describe("formatting", () => {
@@ -11,6 +11,17 @@ describe("formatting", () => {
 
   it("passes invalid timestamps through untouched", () => {
     expect(formatDateTime("not-a-date")).toBe("not-a-date");
+  });
+
+  it("renders a compact stamp that fits tight columns", () => {
+    // Same year: the year is dropped; invalid input passes through.
+    const now = Date.parse("2026-08-28T12:00:00Z");
+    const text = formatDateTimeCompact("2026-08-26T16:44:07Z", now);
+    expect(text).not.toContain("2026");
+    expect(text.length).toBeGreaterThan(4);
+    expect(formatDateTimeCompact("not-a-date", now)).toBe("not-a-date");
+    // A different year keeps it - old data must not lose its year.
+    expect(formatDateTimeCompact("2024-01-15T10:30:00Z", now)).toContain("2024");
   });
 
   it("ages timestamps compactly", () => {
