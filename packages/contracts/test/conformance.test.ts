@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { startLiveServer, type LiveServer } from "../src/testing/server.ts";
 import {
+  Artifact,
   ErrorBody,
   Event,
   IntakeReceipt,
@@ -214,6 +215,30 @@ describe("live conformance against hephaestus-server", () => {
     });
     expect(merge.status).toBe(409);
     expect(ErrorBody.parse(merge.body)).toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("lists artifacts in the documented shape (empty for a run that never built)", async () => {
+    const list = await authed("/api/v1/runs/" + context.runId + "/artifacts");
+    expect(list.status).toBe(200);
+    expect(Array.isArray(list.body)).toBe(true);
+    // A run that never built has no artifacts; the empty array still
+    // parses against the strict mirror.
+    z.array(Artifact).parse(list.body);
+  });
+
+  it("answers artifact verification and download 404s honestly for unknown ids", async () => {
+    const missing = randomUUID();
+    const verification = await authed(
+      "/api/v1/runs/" + context.runId + "/artifacts/" + missing + "/verification",
+    );
+    expect(verification.status).toBe(404);
+    expect(ErrorBody.parse(verification.body)).toMatchObject({ code: "NOT_FOUND" });
+
+    const download = await authed(
+      "/api/v1/runs/" + context.runId + "/artifacts/" + missing,
+    );
+    expect(download.status).toBe(404);
+    expect(ErrorBody.parse(download.body)).toMatchObject({ code: "NOT_FOUND" });
   });
 });
 

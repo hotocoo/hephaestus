@@ -109,6 +109,6 @@ mod tests {
         db.ping().await.expect("ping");
         let v = db.migration_version().await.expect("version query");
         assert!(v.is_some(), "migrations must have run");
-        assert_eq!(v.unwrap_or((0, String::new())).1, "deployment pipeline");
+        assert_eq!(v.unwrap_or((0, String::new())).1, "artifact registry");
     }
 }

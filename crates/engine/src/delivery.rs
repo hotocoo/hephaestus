@@ -231,6 +231,25 @@ pub fn wants_deployment(strategy: &StrategyNotes) -> bool {
 /// file count; an empty directory hashes the empty input (still a
 /// stable, honest fingerprint of "nothing executable was produced").
 pub fn hash_artifacts(dir: &Path) -> Result<(String, usize)> {
+    let (digest, files) = collect_artifacts(dir)?;
+    Ok((digest, files.len()))
+}
+
+/// One produced artifact file, hashed individually (ADR-015).
+#[derive(Debug, Clone)]
+pub struct ArtifactFile {
+    /// Path relative to the artifact directory.
+    pub relative_path: String,
+    /// SHA-256 over the file content (hex).
+    pub sha256: String,
+    /// File size in bytes.
+    pub size_bytes: u64,
+}
+
+/// Single pass over the produced executables yielding both the
+/// aggregate directory fingerprint (exactly the ADR-008 algorithm) and
+/// the per-file registry records, so one read per file serves both.
+pub fn collect_artifacts(dir: &Path) -> Result<(String, Vec<ArtifactFile>)> {
     let mut executables: Vec<std::path::PathBuf> = WalkDir::new(dir)
         .follow_links(false)
         .into_iter()
@@ -243,18 +262,26 @@ pub fn hash_artifacts(dir: &Path) -> Result<(String, usize)> {
     executables.dedup();
 
     let mut hasher = Sha256::new();
+    let mut files = Vec::with_capacity(executables.len());
     for path in &executables {
         let relative = path
             .strip_prefix(dir)
             .map_err(|e| Error::Storage(Box::new(e)))?;
+        let bytes = std::fs::read(path).map_err(|e| Error::Storage(Box::new(e)))?;
         hasher.update(relative.to_string_lossy().as_bytes());
         hasher.update([0u8]);
-        let bytes = std::fs::read(path).map_err(|e| Error::Storage(Box::new(e)))?;
         hasher.update(&bytes);
         hasher.update([0u8]);
+        let mut content = Sha256::new();
+        content.update(&bytes);
+        files.push(ArtifactFile {
+            relative_path: relative.to_string_lossy().into_owned(),
+            sha256: hex::encode(content.finalize()),
+            size_bytes: bytes.len() as u64,
+        });
     }
     let digest = hasher.finalize();
-    Ok((hex::encode(digest), executables.len()))
+    Ok((hex::encode(digest), files))
 }
 
 /// Executable-bit probe (unix permission model).
@@ -509,11 +536,35 @@ async fn build(
     }
 
     let artifact_dir = workspace.join(ARTIFACT_DIR);
-    let (sha, files) = hash_artifacts(&artifact_dir).map_err(StageError::Retryable)?;
-    let artifact_path = if files == 0 { None } else { Some(ARTIFACT_DIR) };
-    db.finish_build(org, run_id, build_id, true, artifact_path, Some(&sha))
-        .await
-        .map_err(StageError::Permanent)?;
+    let (sha, files) = collect_artifacts(&artifact_dir).map_err(StageError::Retryable)?;
+    let artifact_path = if files.is_empty() {
+        None
+    } else {
+        Some(ARTIFACT_DIR)
+    };
+    // Registry rows (workspace-relative: target/debug/<file>) land in
+    // the same transaction as the build row's terminal outcome, so
+    // state and per-file evidence never diverge (ADR-015).
+    let records: Vec<hephaestus_db::delivery::ArtifactRecord> = files
+        .iter()
+        .map(|file| hephaestus_db::delivery::ArtifactRecord {
+            task_id,
+            path: format!("{ARTIFACT_DIR}/{}", file.relative_path),
+            sha256: file.sha256.clone(),
+            size_bytes: file.size_bytes,
+        })
+        .collect();
+    db.finish_build_with_artifacts(
+        org,
+        run_id,
+        build_id,
+        true,
+        artifact_path,
+        Some(&sha),
+        &records,
+    )
+    .await
+    .map_err(StageError::Permanent)?;
 
     // Re-read the row so routing sees its terminal, evidence-grade form.
     let finished = db

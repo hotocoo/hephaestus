@@ -17,6 +17,8 @@ import { ApiError } from "@hephaestus/sdk";
 import type {
   ApprovalDecisionInput,
   ApprovalDecisionOutput,
+  Artifact,
+  ArtifactVerification,
   CreateTaskInput,
   Deployment,
   Event,
@@ -51,6 +53,9 @@ export interface ControlPlane {
   getTaskRun(taskId: string): Promise<Run>;
   getRun(runId: string): Promise<Run>;
   getRunDeployment(runId: string): Promise<Deployment>;
+  listRunArtifacts(runId: string): Promise<Artifact[]>;
+  verifyArtifact(runId: string, artifactId: string): Promise<ArtifactVerification>;
+  downloadArtifact(runId: string, artifactId: string): Promise<Blob>;
   listRunEvents(runId: string, query?: PageQuery): Promise<Event[]>;
   getApprovalGate(runId: string): Promise<Gate>;
   decideApproval(runId: string, input: ApprovalDecisionInput): Promise<ApprovalDecisionOutput>;

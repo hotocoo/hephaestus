@@ -63,6 +63,7 @@ fn run() -> hephaestus_core::Result<()> {
             environment = ?cfg.environment,
             database = %cfg.database.redacted_url(),
             web_serving = cfg.web.dist_dir.is_some(),
+            storage_root = %cfg.storage.root.display(),
             "configuration loaded"
         );
 
@@ -77,7 +78,8 @@ fn run() -> hephaestus_core::Result<()> {
             AuthPolicy::new(cfg.auth.disabled, &cfg.auth.keys),
             cfg.server.max_body_bytes,
         )
-        .with_request_timeout(cfg.server.request_timeout_secs);
+        .with_request_timeout(cfg.server.request_timeout_secs)
+        .with_storage_root(cfg.storage.root.clone());
         if let Some(dist_dir) = cfg.web.dist_dir.clone() {
             let site = WebSite::load(&dist_dir, cfg.web.runtime_config.as_ref())?;
             tracing::info!(dir = %dist_dir.display(), "serving dashboard");

@@ -6,8 +6,11 @@
 //! All durable effects flow through engine services so their
 //! idempotency and audit guarantees hold verbatim over HTTP.
 
+use std::path::{Path as StdPath, PathBuf};
+
+use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{HeaderMap, Method, StatusCode, Uri};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -16,18 +19,24 @@ use axum::{Json, Router};
 use hephaestus_core::Error;
 use hephaestus_core::domain::Plan;
 use hephaestus_core::event::AggregateKind;
-use hephaestus_core::id::{OrganizationId, ProjectId, RepositoryId, TaskId, WorkflowRunId};
+use hephaestus_core::id::{
+    ArtifactId, OrganizationId, ProjectId, RepositoryId, TaskId, WorkflowRunId,
+};
 use hephaestus_engine::approval::ApprovalDecisionInput;
 use hephaestus_engine::delivery::MergeDecisionInput;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncReadExt;
+use tokio_util::io::ReaderStream;
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
 use crate::auth::auth_middleware;
 use crate::dto::{
-    ApprovalDecisionRequest, ApprovalDecisionResponse, Authed, CreateTaskRequest,
-    DeploymentResponse, EventResponse, GateResponse, IntakeResponse, MergeDecisionRequest,
-    MergeDecisionResponse, Page, ProjectResponse, RepositoryResponse, RunResponse, TaskResponse,
+    ApprovalDecisionRequest, ApprovalDecisionResponse, ArtifactResponse,
+    ArtifactVerificationResponse, Authed, CreateTaskRequest, DeploymentResponse, EventResponse,
+    GateResponse, IntakeResponse, MergeDecisionRequest, MergeDecisionResponse, Page,
+    ProjectResponse, RepositoryResponse, RunResponse, TaskResponse,
 };
 use crate::state::AppState;
 use crate::{ApiError, ApiResult};
@@ -45,6 +54,15 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/{run_id}", get(get_run))
         .route("/runs/{run_id}/deployment", get(get_run_deployment))
         .route("/runs/{run_id}/events", get(list_run_events))
+        .route("/runs/{run_id}/artifacts", get(list_run_artifacts))
+        .route(
+            "/runs/{run_id}/artifacts/{artifact_id}",
+            get(download_artifact),
+        )
+        .route(
+            "/runs/{run_id}/artifacts/{artifact_id}/verification",
+            get(verify_artifact),
+        )
         .route(
             "/runs/{run_id}/approval",
             get(get_approval_gate).post(decide_approval),
@@ -432,5 +450,222 @@ async fn decide_merge(
         hephaestus_engine::delivery::MergeOutcome::AlreadyMerged => {
             MergeDecisionResponse::AlreadyMerged
         }
+    }))
+}
+
+// ---------------------------------------------------------------------
+// Artifact registry and serving (ADR-015).
+//
+// Three tenant-scoped reads over the per-file evidence a successful
+// build recorded: a listing, a byte-faithful stream, and an explicit
+// re-hash. The API reads the worker's storage root; without one it
+// fails loudly instead of pretending.
+
+/// The configured storage root, or a loud configuration failure.
+fn storage_root(state: &AppState) -> ApiResult<&StdPath> {
+    state.storage_root.as_deref().ok_or_else(|| {
+        ApiError(Error::Config(
+            "storage root is not configured; artifact endpoints are unavailable".into(),
+        ))
+    })
+}
+
+/// Resolve and containment-check one artifact's on-disk file.
+///
+/// `Ok(None)` means the file is absent (a `missing` verification, a
+/// 404 download). `Ok(Some(path))` is the canonicalized file, proven
+/// to stay inside the run workspace even through symlinks. Errors are
+/// configuration faults and escape attempts.
+fn resolve_artifact_file(
+    root: &StdPath,
+    run: Uuid,
+    artifact_path: &str,
+) -> ApiResult<Option<PathBuf>> {
+    if artifact_path.is_empty()
+        || artifact_path.starts_with('/')
+        || artifact_path.split('/').any(|segment| segment == "..")
+    {
+        return Err(ApiError(Error::Validation {
+            field: "path".into(),
+            message: "artifact path escapes the run workspace".into(),
+        }));
+    }
+    let workspace = root.join("runs").join(run.to_string()).join("repo");
+    let candidate = workspace.join(artifact_path);
+    if !candidate.exists() {
+        return Ok(None);
+    }
+    let workspace_c = workspace
+        .canonicalize()
+        .map_err(|_| ApiError(Error::NotFound { entity: "artifact" }))?;
+    let candidate_c = candidate
+        .canonicalize()
+        .map_err(|_| ApiError(Error::NotFound { entity: "artifact" }))?;
+    if !candidate_c.starts_with(&workspace_c) {
+        return Err(ApiError(Error::Validation {
+            field: "path".into(),
+            message: "artifact path escapes the run workspace".into(),
+        }));
+    }
+    Ok(Some(candidate_c))
+}
+
+/// Fetch one artifact row, scoped to the caller's tenant and the run
+/// named in the URL; a row under a different run is not found.
+async fn artifact_for_run(
+    state: &AppState,
+    org: OrganizationId,
+    run_id: &str,
+    artifact_id: &str,
+) -> ApiResult<(Uuid, hephaestus_db::delivery::ArtifactRow)> {
+    let run = WorkflowRunId::from_uuid(id_of(run_id, "run_id")?);
+    let artifact = ArtifactId::from_uuid(id_of(artifact_id, "artifact_id")?);
+    let row = state
+        .db
+        .get_artifact(org, artifact)
+        .await?
+        .ok_or(ApiError(Error::NotFound { entity: "artifact" }))?;
+    if row.run_id != run.as_uuid() {
+        return Err(ApiError(Error::NotFound { entity: "artifact" }));
+    }
+    Ok((run.as_uuid(), row))
+}
+
+/// The registry listing for a run; the run must exist in the caller's
+/// tenant. An empty list is the honest answer for runs that never
+/// built.
+async fn list_run_artifacts(
+    State(state): State<AppState>,
+    Authed(principal): Authed,
+    Path(run_id): Path<String>,
+) -> ApiResult<Json<Vec<ArtifactResponse>>> {
+    let run = WorkflowRunId::from_uuid(id_of(&run_id, "run_id")?);
+    // get_run errors NotFound when the run is absent from this tenant.
+    state.db.get_run(principal.organization_id, run).await?;
+    let rows = state
+        .db
+        .list_artifacts(principal.organization_id, run)
+        .await?;
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
+}
+
+/// Stream one artifact's bytes. The ETag is the recorded SHA-256 and
+/// the `X-Artifact-Sha256` header lets clients verify independently.
+/// A row whose file vanished is a 404, never empty bytes.
+async fn download_artifact(
+    State(state): State<AppState>,
+    Authed(principal): Authed,
+    Path((run_id, artifact_id)): Path<(String, String)>,
+) -> Response {
+    match download_artifact_inner(&state, principal.organization_id, run_id, artifact_id).await {
+        Ok(response) => response,
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn download_artifact_inner(
+    state: &AppState,
+    org: OrganizationId,
+    run_id: String,
+    artifact_id: String,
+) -> ApiResult<Response> {
+    let (run, row) = artifact_for_run(state, org, &run_id, &artifact_id).await?;
+    let root = storage_root(state)?;
+    let Some(file) = resolve_artifact_file(root, run, &row.path)? else {
+        return Err(ApiError(Error::NotFound { entity: "artifact" }));
+    };
+    let size = std::fs::metadata(&file)
+        .map(|m| m.len())
+        .map_err(|_| ApiError(Error::NotFound { entity: "artifact" }))?;
+    let file = tokio::fs::File::open(&file)
+        .await
+        .map_err(|_| ApiError(Error::NotFound { entity: "artifact" }))?;
+    let body = Body::from_stream(ReaderStream::new(file));
+
+    // The digest headers are always valid (hex plus ETag quotes); the
+    // disposition is attached only when the filename is header-safe.
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::ETAG,
+        header_value(&format!("\"{}\"", row.sha256))?,
+    );
+    headers.insert("x-artifact-sha256", header_value(&row.sha256)?);
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    headers.insert(
+        axum::http::header::CONTENT_LENGTH,
+        header_value(&size.to_string())?,
+    );
+    let filename = row
+        .path
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("artifact");
+    if let Ok(disposition) = header_value(&format!("attachment; filename=\"{filename}\"")) {
+        headers.insert(axum::http::header::CONTENT_DISPOSITION, disposition);
+    }
+
+    Ok((StatusCode::OK, headers, body).into_response())
+}
+
+/// Parse a header value from a string that is known-valid for our
+/// inputs (hex digests, numeric sizes, quoted ETags). The error path
+/// is unreachable for those inputs but is mapped to an internal fault
+/// rather than a panic, keeping production code panic-free.
+fn header_value(raw: &str) -> ApiResult<HeaderValue> {
+    HeaderValue::from_str(raw).map_err(|_| {
+        ApiError(Error::Storage(Box::new(std::io::Error::other(
+            "unreachable: invalid artifact header value",
+        ))))
+    })
+}
+
+/// Server-side re-hash of one artifact's on-disk bytes against its
+/// recorded digest. A read-only statement about the disk: `verified`,
+/// `missing`, or `corrupt`, never a mutation.
+async fn verify_artifact(
+    State(state): State<AppState>,
+    Authed(principal): Authed,
+    Path((run_id, artifact_id)): Path<(String, String)>,
+) -> ApiResult<Json<ArtifactVerificationResponse>> {
+    let (run, row) =
+        artifact_for_run(&state, principal.organization_id, &run_id, &artifact_id).await?;
+    let root = storage_root(&state)?;
+    let file = resolve_artifact_file(root, run, &row.path)?;
+    let (status, actual) = match file {
+        None => ("missing".to_string(), None),
+        Some(path) => {
+            let mut file = tokio::fs::File::open(&path)
+                .await
+                .map_err(|e| Error::Storage(Box::new(e)))?;
+            let mut hasher = Sha256::new();
+            let mut buffer = [0u8; 8192];
+            loop {
+                let n = file
+                    .read(&mut buffer)
+                    .await
+                    .map_err(|e| Error::Storage(Box::new(e)))?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..n]);
+            }
+            let digest = hex::encode(hasher.finalize());
+            let status = if digest == row.sha256 {
+                "verified"
+            } else {
+                "corrupt"
+            };
+            (status.to_string(), Some(digest))
+        }
+    };
+    Ok(Json(ArtifactVerificationResponse {
+        artifact_id: row.id,
+        status,
+        expected_sha256: row.sha256,
+        actual_sha256: actual,
     }))
 }

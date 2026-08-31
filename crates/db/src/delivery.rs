@@ -11,7 +11,9 @@
 //! the SAME transaction; all queries are tenant-scoped.
 
 use chrono::{DateTime, Utc};
-use hephaestus_core::id::{BuildId, ExecutionId, OrganizationId, TaskId, WorkflowRunId};
+use hephaestus_core::id::{
+    ArtifactId, BuildId, ExecutionId, OrganizationId, TaskId, WorkflowRunId,
+};
 use hephaestus_core::{Error, Result};
 use uuid::Uuid;
 
@@ -36,6 +38,61 @@ pub struct BuildRow {
     /// SHA-256 over the produced artifacts (hex), when built.
     pub artifact_sha256: Option<String>,
     /// When the build row was created.
+    pub created_at: DateTime<Utc>,
+}
+
+/// One per-file artifact to register with a finished build (ADR-015).
+#[derive(Debug, Clone)]
+pub struct ArtifactRecord {
+    /// Owning task (carried so the INSERT can resolve tenant scoping
+    /// through the tasks table in the same statement).
+    pub task_id: TaskId,
+    /// Workspace-relative file path; validated before insert.
+    pub path: String,
+    /// SHA-256 over the file content (hex).
+    pub sha256: String,
+    /// File size in bytes.
+    pub size_bytes: u64,
+}
+
+impl ArtifactRecord {
+    /// Containment validation mirroring the storage-side CHECK: no
+    /// absolute paths, no `..` segments, never empty.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.path.is_empty() {
+            return Err("artifact path must not be empty".into());
+        }
+        if self.path.starts_with('/') {
+            return Err("artifact path must be workspace-relative".into());
+        }
+        if self.path.split('/').any(|segment| segment == "..") {
+            return Err("artifact path must not contain '..' segments".into());
+        }
+        if !self.sha256.chars().all(|c| c.is_ascii_hexdigit()) || self.sha256.len() != 64 {
+            return Err("artifact sha256 must be 64 hex characters".into());
+        }
+        Ok(())
+    }
+}
+
+/// A registered artifact as stored (ADR-015).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ArtifactRow {
+    /// Artifact id.
+    pub id: Uuid,
+    /// Owning task.
+    pub task_id: Uuid,
+    /// Driving workflow run.
+    pub run_id: Uuid,
+    /// Build that produced the file.
+    pub build_id: Uuid,
+    /// Workspace-relative file path.
+    pub path: String,
+    /// SHA-256 over the file content (hex).
+    pub sha256: String,
+    /// File size in bytes.
+    pub size_bytes: i64,
+    /// When the artifact row was created.
     pub created_at: DateTime<Utc>,
 }
 
@@ -301,6 +358,31 @@ impl Db {
         artifact_path: Option<&str>,
         artifact_sha256: Option<&str>,
     ) -> Result<()> {
+        self.finish_build_with_artifacts(org, run, build, ok, artifact_path, artifact_sha256, &[])
+            .await
+    }
+
+    /// Close a build row with its terminal outcome, its per-file
+    /// artifact registry rows, and the typed build event - all in the
+    /// SAME transaction (ADR-015). `artifacts` is empty for failed
+    /// builds, which record no files.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finish_build_with_artifacts(
+        &self,
+        org: OrganizationId,
+        run: WorkflowRunId,
+        build: BuildId,
+        ok: bool,
+        artifact_path: Option<&str>,
+        artifact_sha256: Option<&str>,
+        artifacts: &[ArtifactRecord],
+    ) -> Result<()> {
+        for record in artifacts {
+            record.validate().map_err(|message| Error::Validation {
+                field: "path".into(),
+                message,
+            })?;
+        }
         let mut tx = self.pool().begin().await.map_err(crate::map_sqlx)?;
 
         let updated = sqlx::query(
@@ -321,6 +403,26 @@ impl Db {
             return Err(Error::Conflict {
                 message: "build is not running; refusing to finish it twice".into(),
             });
+        }
+
+        for record in artifacts {
+            sqlx::query(
+                "INSERT INTO artifacts
+                   (id, organization_id, task_id, run_id, build_id, path, sha256, size_bytes)
+                 SELECT $1, $2, t.id, $4, $5, $6, $7, $8
+                 FROM tasks t WHERE t.id = $3 AND t.organization_id = $2",
+            )
+            .bind(Uuid::now_v7())
+            .bind(org.as_uuid())
+            .bind(record.task_id.as_uuid())
+            .bind(run.as_uuid())
+            .bind(build.as_uuid())
+            .bind(&record.path)
+            .bind(&record.sha256)
+            .bind(i64::try_from(record.size_bytes).unwrap_or(i64::MAX))
+            .execute(&mut *tx)
+            .await
+            .map_err(crate::map_sqlx)?;
         }
 
         let payload = serde_json::to_value(hephaestus_core::event::EventPayload::BuildCompleted {
@@ -348,6 +450,44 @@ impl Db {
 
         tx.commit().await.map_err(crate::map_sqlx)?;
         Ok(())
+    }
+
+    /// Every registered artifact of a run, path-ordered. Spans all of
+    /// the run's builds; each row carries its build so a rebuilt run's
+    /// evidence sets stay distinguishable.
+    pub async fn list_artifacts(
+        &self,
+        org: OrganizationId,
+        run: WorkflowRunId,
+    ) -> Result<Vec<ArtifactRow>> {
+        sqlx::query_as::<_, ArtifactRow>(
+            "SELECT id, task_id, run_id, build_id, path, sha256, size_bytes, created_at
+             FROM artifacts WHERE run_id = $1 AND organization_id = $2
+             ORDER BY created_at DESC, path ASC",
+        )
+        .bind(run.as_uuid())
+        .bind(org.as_uuid())
+        .fetch_all(self.pool())
+        .await
+        .map_err(crate::map_sqlx)
+    }
+
+    /// One artifact by id; None across tenants, exactly like every
+    /// other scoped read.
+    pub async fn get_artifact(
+        &self,
+        org: OrganizationId,
+        artifact: ArtifactId,
+    ) -> Result<Option<ArtifactRow>> {
+        sqlx::query_as::<_, ArtifactRow>(
+            "SELECT id, task_id, run_id, build_id, path, sha256, size_bytes, created_at
+             FROM artifacts WHERE id = $1 AND organization_id = $2",
+        )
+        .bind(artifact.as_uuid())
+        .bind(org.as_uuid())
+        .fetch_optional(self.pool())
+        .await
+        .map_err(crate::map_sqlx)
     }
 }
 

@@ -15,7 +15,7 @@ authors = ["Hephaestus Developers"]
 [workspace.dependencies]
 # async runtime
 tokio = { version = "1.45", features = ["full"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
 futures = "0.3"
 async-trait = "0.1"
 

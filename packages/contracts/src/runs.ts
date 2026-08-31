@@ -45,3 +45,35 @@ export const Deployment = z.strictObject({
   created_at: IsoDateTime,
 });
 export type Deployment = z.infer<typeof Deployment>;
+
+/**
+ * One registered build artifact (ADR-015). The path is workspace-
+ * relative and contained; the sha256 is over the file content.
+ */
+export const Artifact = z.strictObject({
+  id: Uuid,
+  task_id: Uuid,
+  run_id: Uuid,
+  build_id: Uuid,
+  /** Workspace-relative file path; no absolute paths, no .. segments. */
+  path: z.string(),
+  /** SHA-256 over the file content (64 lowercase hex). */
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  size_bytes: z.number().int().nonnegative(),
+  created_at: IsoDateTime,
+});
+export type Artifact = z.infer<typeof Artifact>;
+
+/**
+ * The result of re-hashing one artifact's on-disk bytes against its
+ * recorded digest (ADR-015). A read-only statement about the disk.
+ */
+export const ArtifactVerification = z.strictObject({
+  artifact_id: Uuid,
+  /** verified: bytes match. missing: file gone. corrupt: bytes differ. */
+  status: z.enum(["verified", "missing", "corrupt"]),
+  expected_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  /** Digest of the bytes currently on disk, when readable. */
+  actual_sha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+});
+export type ArtifactVerification = z.infer<typeof ArtifactVerification>;

@@ -540,8 +540,7 @@ async fn extraction_uses_tools_audited_and_chains_plan_job() {
 async fn analysis_chains_extraction_into_planning_queue() {
     let origin = tempfile::tempdir().expect("origin dir");
     let git = GitRepo::init(origin.path()).expect("init");
-    std::fs::write(origin.path().join("README.md"), "# Sample\nupload docs\n")
-        .expect("seed file");
+    std::fs::write(origin.path().join("README.md"), "# Sample\nupload docs\n").expect("seed file");
     git.commit_all("initial", ("tester", "tester@example.invalid"))
         .expect("commit");
 
@@ -555,8 +554,8 @@ async fn analysis_chains_extraction_into_planning_queue() {
         .expect("intake");
 
     let layout = WorkspaceLayout::new(storage.path());
-    let registry = HandlerRegistry::new()
-        .with_analyze(Arc::new(AnalysisHandler::new(layout.clone())));
+    let registry =
+        HandlerRegistry::new().with_analyze(Arc::new(AnalysisHandler::new(layout.clone())));
 
     // ONLY the analysis queue: exactly what a deterministic worker
     // without model credentials serves (ADR-010).
@@ -595,13 +594,14 @@ async fn analysis_chains_extraction_into_planning_queue() {
     assert!(planned, "extraction job must be chained onto 'planning'");
 
     // ...and nothing extract-shaped may ride the analysis queue.
-    let poisoned: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM jobs WHERE queue='analysis' AND idempotency_key=$1",
-    )
-    .bind(&key)
-    .fetch_one(db.pool())
-    .await
-    .expect("poisoned count");
-    assert_eq!(poisoned.0, 0, "no extraction jobs may be enqueued on analysis");
+    let poisoned: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM jobs WHERE queue='analysis' AND idempotency_key=$1")
+            .bind(&key)
+            .fetch_one(db.pool())
+            .await
+            .expect("poisoned count");
+    assert_eq!(
+        poisoned.0, 0,
+        "no extraction jobs may be enqueued on analysis"
+    );
 }
-

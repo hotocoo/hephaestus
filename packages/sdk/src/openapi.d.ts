@@ -91,6 +91,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/{run_id}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Entity identifier; must be a UUID. */
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        /** List the artifacts a run's builds registered */
+        get: operations["listRunArtifacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/{run_id}/artifacts/{artifact_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Entity identifier; must be a UUID. */
+                run_id: string;
+                /** @description Entity identifier; must be a UUID. */
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        /** Download one artifact's bytes */
+        get: operations["getRunArtifact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/{run_id}/artifacts/{artifact_id}/verification": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Entity identifier; must be a UUID. */
+                run_id: string;
+                /** @description Entity identifier; must be a UUID. */
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        /** Re-hash one artifact on disk against its recorded digest */
+        get: operations["verifyRunArtifact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/{run_id}/deployment": {
         parameters: {
             query?: never;
@@ -304,6 +368,37 @@ export interface components {
             approval_id: string;
             /** @constant */
             outcome: "rejected";
+        };
+        ArtifactResponse: {
+            /** Format: uuid */
+            build_id: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            id: string;
+            /** @description Workspace-relative file path. Contained: no absolute paths, no .. segments. */
+            path: string;
+            /** Format: uuid */
+            run_id: string;
+            /** @description SHA-256 over the file content. */
+            sha256: string;
+            /** Format: int64 */
+            size_bytes: number;
+            /** Format: uuid */
+            task_id: string;
+        };
+        ArtifactVerificationResponse: {
+            /** @description Digest of the bytes currently on disk, when readable. */
+            actual_sha256: string | null;
+            /** Format: uuid */
+            artifact_id: string;
+            /** @description Digest the build recorded. */
+            expected_sha256: string;
+            /**
+             * @description verified: on-disk bytes hash to the recorded digest. missing: the file is gone. corrupt: the bytes differ.
+             * @enum {string}
+             */
+            status: "verified" | "missing" | "corrupt";
         };
         CreateTaskRequest: {
             description: string;
@@ -743,6 +838,160 @@ export interface operations {
                 };
             };
             /** @description Malformed body or non-UUID id. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    listRunArtifacts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Entity identifier; must be a UUID. */
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One entry per registered file, newest build first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactResponse"][];
+                };
+            };
+            /** @description Missing or unknown bearer token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No run with that id exists in the caller's organization. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The id is not a UUID. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getRunArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Entity identifier; must be a UUID. */
+                run_id: string;
+                /** @description Entity identifier; must be a UUID. */
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The file's bytes, streamed. The ETag is the recorded SHA-256; the X-Artifact-Sha256 header repeats it for independent verification. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description Missing or unknown bearer token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The artifact does not exist under this run, or its file is no longer on disk. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The id is not a UUID. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    verifyRunArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Entity identifier; must be a UUID. */
+                run_id: string;
+                /** @description Entity identifier; must be a UUID. */
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description verified, missing or corrupt, with the expected and actual digests. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactVerificationResponse"];
+                };
+            };
+            /** @description Missing or unknown bearer token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The artifact does not exist under this run. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The id is not a UUID. */
             422: {
                 headers: {
                     [name: string]: unknown;

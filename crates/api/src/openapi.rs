@@ -21,7 +21,7 @@ pub const OPENAPI_VERSION: &str = "3.1.0";
 /// Canonical `(method, path)` inventory of every operation the
 /// document describes. Tests pin the actual router against exactly
 /// this list so an undocumented route or a stale entry fails loudly.
-pub const OPERATIONS: [(&str, &str); 17] = [
+pub const OPERATIONS: [(&str, &str); 20] = [
     ("GET", "/healthz"),
     ("GET", "/readyz"),
     ("GET", "/api/v1/openapi.json"),
@@ -35,6 +35,12 @@ pub const OPERATIONS: [(&str, &str); 17] = [
     ("GET", "/api/v1/runs/{run_id}"),
     ("GET", "/api/v1/runs/{run_id}/deployment"),
     ("GET", "/api/v1/runs/{run_id}/events"),
+    ("GET", "/api/v1/runs/{run_id}/artifacts"),
+    ("GET", "/api/v1/runs/{run_id}/artifacts/{artifact_id}"),
+    (
+        "GET",
+        "/api/v1/runs/{run_id}/artifacts/{artifact_id}/verification",
+    ),
     ("GET", "/api/v1/runs/{run_id}/approval"),
     ("POST", "/api/v1/runs/{run_id}/approval"),
     ("GET", "/api/v1/runs/{run_id}/merge-gate"),
@@ -210,6 +216,53 @@ pub fn openapi_document() -> Value {
                 response_map(&[
                     ("200", ok_json("Newest-first event page.", json!({"type": "array", "items": sref("EventResponse")}))),
                     ("401", error("Missing or unknown bearer token.")),
+                    ("422", error("The id is not a UUID.")),
+                ]),
+            )
+            .into(),
+            ("GET", "/api/v1/runs/{run_id}/artifacts") => protected_operation(
+                "listRunArtifacts",
+                "List the artifacts a run's builds registered",
+                &["Runs"],
+                json!([]),
+                response_map(&[
+                    ("200", ok_json("One entry per registered file, newest build first.", json!({"type": "array", "items": sref("ArtifactResponse")}))),
+                    ("401", error("Missing or unknown bearer token.")),
+                    ("404", error("No run with that id exists in the caller's organization.")),
+                    ("422", error("The id is not a UUID.")),
+                ]),
+            )
+            .into(),
+            ("GET", "/api/v1/runs/{run_id}/artifacts/{artifact_id}") => Operation::new(
+                "getRunArtifact",
+                "Download one artifact's bytes",
+                &[
+                    "Runs",
+                ],
+                json!([]),
+                response_map(&[
+                    (
+                        "200",
+                        json!({
+                            "description": "The file's bytes, streamed. The ETag is the recorded SHA-256; the X-Artifact-Sha256 header repeats it for independent verification.",
+                            "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}
+                        }),
+                    ),
+                    ("401", error("Missing or unknown bearer token.")),
+                    ("404", error("The artifact does not exist under this run, or its file is no longer on disk.")),
+                    ("422", error("The id is not a UUID.")),
+                ]),
+            )
+            .into(),
+            ("GET", "/api/v1/runs/{run_id}/artifacts/{artifact_id}/verification") => protected_operation(
+                "verifyRunArtifact",
+                "Re-hash one artifact on disk against its recorded digest",
+                &["Runs"],
+                json!([]),
+                response_map(&[
+                    ("200", ok_json("verified, missing or corrupt, with the expected and actual digests.", sref("ArtifactVerificationResponse"))),
+                    ("401", error("Missing or unknown bearer token.")),
+                    ("404", error("The artifact does not exist under this run.")),
                     ("422", error("The id is not a UUID.")),
                 ]),
             )
@@ -434,6 +487,30 @@ fn schemas() -> Value {
                 "status": {"type": "string", "enum": ["running", "succeeded", "failed"]},
                 "failure_reason": {"type": ["string", "null"], "description": "Why the deployment failed, when it failed."},
                 "created_at": datetime()
+            }
+        },
+        "ArtifactResponse": {
+            "type": "object",
+            "required": ["id", "task_id", "run_id", "build_id", "path", "sha256", "size_bytes", "created_at"],
+            "properties": {
+                "id": uuid(),
+                "task_id": uuid(),
+                "run_id": uuid(),
+                "build_id": uuid(),
+                "path": {"type": "string", "description": "Workspace-relative file path. Contained: no absolute paths, no .. segments."},
+                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 over the file content."},
+                "size_bytes": {"type": "integer", "format": "int64", "minimum": 0},
+                "created_at": datetime()
+            }
+        },
+        "ArtifactVerificationResponse": {
+            "type": "object",
+            "required": ["artifact_id", "status", "expected_sha256", "actual_sha256"],
+            "properties": {
+                "artifact_id": uuid(),
+                "status": {"type": "string", "enum": ["verified", "missing", "corrupt"], "description": "verified: on-disk bytes hash to the recorded digest. missing: the file is gone. corrupt: the bytes differ."},
+                "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Digest the build recorded."},
+                "actual_sha256": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}], "description": "Digest of the bytes currently on disk, when readable."}
             }
         },
         "EventResponse": {
@@ -868,6 +945,8 @@ mod tests {
             "TaskResponse",
             "RunResponse",
             "DeploymentResponse",
+            "ArtifactResponse",
+            "ArtifactVerificationResponse",
             "EventResponse",
             "GateResponse",
             "ProjectResponse",

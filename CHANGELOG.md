@@ -6,6 +6,25 @@ until the 1.0 API contract freezes (its own ADR, to come).
 
 ## [Unreleased]
 
+### Added
+
+- Artifact registry and serving (ADR-015): successful builds now
+  record one row per produced executable file - workspace-relative
+  path, content SHA-256, size - in the same transaction that closes
+  the build row, so state and per-file evidence never diverge. The API
+  gains three tenant-scoped operations: a registry listing,
+  a byte-faithful stream (ETag and `X-Artifact-Sha256` carry the
+  recorded digest for independent verification), and an explicit
+  server-side re-hash reporting `verified`, `missing`, or `corrupt`.
+  A row whose file vanished downloads as 404, never empty bytes. The
+  dashboard's run view gains an Artifacts panel with per-file
+  verification and bearer-authenticated downloads through the typed
+  SDK (tokens never ride URLs). The API resolves the storage root from
+  the same layered configuration as the worker; without one the
+  artifact endpoints fail loudly instead of pretending. Mirrored
+  through the OpenAPI inventory, zod contracts, and generated SDK
+  types like every other operation.
+
 ### Fixed
 
 - Dashboard: a run parked in one non-terminal state for an unusually

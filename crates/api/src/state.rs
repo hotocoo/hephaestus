@@ -1,5 +1,6 @@
 //! Shared handler state.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,6 +34,9 @@ pub struct AppState {
     pub request_timeout_secs: u64,
     /// Loaded dashboard site; None serves API-only responses.
     pub web_site: Option<Arc<WebSite>>,
+    /// Storage root for artifact serving (ADR-015); None refuses the
+    /// artifact endpoints loudly instead of pretending to read.
+    pub storage_root: Option<PathBuf>,
 }
 
 impl AppState {
@@ -51,6 +55,7 @@ impl AppState {
             max_body_bytes,
             request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
             web_site: None,
+            storage_root: None,
             db,
         }
     }
@@ -64,6 +69,12 @@ impl AppState {
     /// Attach a loaded dashboard for static serving (ADR-014).
     pub fn with_web_site(mut self, site: WebSite) -> Self {
         self.web_site = Some(Arc::new(site));
+        self
+    }
+
+    /// Configure the storage root artifacts are served from (ADR-015).
+    pub fn with_storage_root(mut self, root: PathBuf) -> Self {
+        self.storage_root = Some(root);
         self
     }
 

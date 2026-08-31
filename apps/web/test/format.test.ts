@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { formatAge, formatDateTime, formatDateTimeCompact, renderPayload } from "../src/lib/format";
+import {
+  formatAge,
+  formatBytes,
+  formatDateTime,
+  formatDateTimeCompact,
+  renderPayload,
+} from "../src/lib/format";
 import { workflowTransition } from "../src/lib/events";
 
 describe("formatting", () => {
@@ -38,6 +44,18 @@ describe("formatting", () => {
     const rendered = renderPayload({ blob: long }, 100);
     expect(rendered.length).toBeLessThanOrEqual(100);
     expect(rendered.endsWith("\u2026")).toBe(true);
+  });
+
+  it("renders byte counts in the smallest fitting unit", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(512)).toBe("512 B");
+    expect(formatBytes(1024)).toBe("1 KB");
+    expect(formatBytes(1536)).toBe("1.5 KB");
+    expect(formatBytes(1024 * 1024)).toBe("1 MB");
+    expect(formatBytes(1024 * 1024 * 1024 * 2 + 1024 * 1024 * 512)).toBe("2.5 GB");
+    // Garbage in, honest zero out.
+    expect(formatBytes(-5)).toBe("0 B");
+    expect(formatBytes(Number.NaN)).toBe("0 B");
   });
 });
 

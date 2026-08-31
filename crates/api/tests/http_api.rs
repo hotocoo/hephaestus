@@ -946,3 +946,452 @@ async fn run_deployment_lookup_is_scoped_and_honest() {
 
     let _ = empty;
 }
+
+// ---------------------------------------------------------------------
+// Artifact registry and serving (ADR-015).
+
+/// Build a router whose artifact endpoints read a tempdir storage root.
+fn app_with_storage(db: &Db, keys: Vec<ApiKey>, disabled: bool, root: &std::path::Path) -> Router {
+    let state = AppState::new(
+        db.clone(),
+        AuthPolicy::new(disabled, &keys),
+        8 * 1024 * 1024,
+    )
+    .with_storage_root(root.to_path_buf());
+    router(state)
+}
+
+/// Seed task -> run -> plan -> passed execution -> succeeded build with
+/// one registered artifact, and write the file to disk under the run's
+/// workspace. Returns the run, the artifact id, and the file's bytes.
+#[allow(clippy::too_many_arguments)]
+async fn seed_run_with_artifact(
+    db: &Db,
+    org: OrganizationId,
+    proj: ProjectId,
+    repo: RepositoryId,
+    root: &std::path::Path,
+    relative_path: &str,
+    file_bytes: &[u8],
+    write_file: bool,
+) -> (hephaestus_core::id::WorkflowRunId, uuid::Uuid, Vec<u8>) {
+    use hephaestus_core::domain::{Plan, PlanStep, StrategyNotes};
+    use hephaestus_core::id::{PlanId, StepId};
+    use hephaestus_db::delivery::ArtifactRecord;
+    use hephaestus_db::tasks::NewTask;
+    use sha2::Digest;
+
+    let task = db
+        .create_task(&NewTask {
+            organization_id: org,
+            project_id: proj,
+            repository_id: repo,
+            title: "build it",
+            description: "",
+            priority: "medium",
+            risk: "low",
+            labels: &[],
+            idempotency_key: None,
+        })
+        .await
+        .expect("task");
+    let run = db.create_run(org, task).await.expect("run");
+
+    let plan_id = PlanId::generate();
+    let mut plan = Plan {
+        id: plan_id,
+        task_id: task,
+        objective: "objective".into(),
+        steps: vec![PlanStep {
+            id: StepId::generate(),
+            plan_id,
+            position: 1,
+            action: "do".into(),
+            verification: "unit:x".into(),
+            risks: vec![],
+        }],
+        affected_components: vec![],
+        affected_symbols: vec![],
+        strategy: StrategyNotes {
+            rollback: None,
+            deployment: None,
+            verification: vec![],
+        },
+        created_at: chrono::Utc::now(),
+        prompt_version: None,
+    };
+    plan.steps[0].plan_id = plan.id;
+    db.create_plan(org, task, run, &plan).await.expect("plan");
+    let exec = db
+        .create_execution_for_run(org, task, run, plan_id)
+        .await
+        .expect("execution");
+    db.finish_execution(org, exec, "passed")
+        .await
+        .expect("passed");
+    let build = db
+        .create_build_for_run(org, task, run, exec)
+        .await
+        .expect("build");
+
+    let sha = hex::encode(sha2::Sha256::digest(file_bytes));
+    let record = ArtifactRecord {
+        task_id: task,
+        path: relative_path.to_string(),
+        sha256: sha.clone(),
+        size_bytes: file_bytes.len() as u64,
+    };
+    db.finish_build_with_artifacts(
+        org,
+        run,
+        build,
+        true,
+        Some(relative_path),
+        Some(&sha),
+        &[record],
+    )
+    .await
+    .expect("build with artifacts");
+
+    // Write the file to the run's workspace on disk, when requested.
+    if write_file {
+        let file_path = root
+            .join("runs")
+            .join(run.to_string())
+            .join("repo")
+            .join(relative_path);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent).expect("create artifact dir");
+        }
+        std::fs::write(&file_path, file_bytes).expect("write artifact file");
+    }
+
+    // Read the artifact row back to get its id.
+    let rows = db.list_artifacts(org, run).await.expect("list artifacts");
+    assert_eq!(rows.len(), 1, "exactly one artifact");
+    (run, rows[0].id, file_bytes.to_vec())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn artifact_endpoints_list_download_and_verify() {
+    use sha2::Digest;
+
+    let _guard = SERIAL.lock().await;
+    let db = test_db().await;
+    let (org, proj, repo) = seed_tenant(&db).await;
+    let root = tempfile::tempdir().expect("storage root");
+    let app = app_with_storage(
+        &db,
+        vec![key_for(TOKEN_A, org, "tester")],
+        false,
+        root.path(),
+    );
+    let auth = [bearer(TOKEN_A)];
+
+    let file_bytes = b"#!/bin/sh\necho forged artifact".to_vec();
+    let (run, artifact_id, bytes) = seed_run_with_artifact(
+        &db,
+        org,
+        proj,
+        repo,
+        root.path(),
+        "target/debug/forge-cli",
+        &file_bytes,
+        true,
+    )
+    .await;
+    let expected_sha = hex::encode(sha2::Sha256::digest(&bytes));
+
+    // The listing returns the registered artifact with its wire shape.
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        &format!("/api/v1/runs/{run}/artifacts"),
+        &auth,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let list = body.as_array().expect("artifact array");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["id"], artifact_id.to_string());
+    assert_eq!(list[0]["path"], "target/debug/forge-cli");
+    assert_eq!(list[0]["sha256"], expected_sha);
+    assert_eq!(list[0]["size_bytes"], file_bytes.len() as i64);
+
+    // The download streams the exact bytes with the digest headers.
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/runs/{run}/artifacts/{artifact_id}"))
+        .header("authorization", format!("Bearer {TOKEN_A}"))
+        .body(Body::empty())
+        .expect("request");
+    let response = app.clone().oneshot(request).await.expect("infallible");
+    let status = response.status();
+    let etag = response
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let sha_header = response
+        .headers()
+        .get("x-artifact-sha256")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let downloaded = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    if status != StatusCode::OK {
+        panic!(
+            "DOWNLOAD FAILED: status={status} body={}",
+            String::from_utf8_lossy(&downloaded)
+        );
+    }
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(etag, Some(format!("\"{expected_sha}\"")));
+    assert_eq!(sha_header, Some(expected_sha.clone()));
+    assert_eq!(downloaded.to_vec(), bytes);
+
+    // Verification re-hashes the on-disk bytes and reports verified.
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        &format!("/api/v1/runs/{run}/artifacts/{artifact_id}/verification"),
+        &auth,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["artifact_id"], artifact_id.to_string());
+    assert_eq!(body["status"], "verified");
+    assert_eq!(body["expected_sha256"], expected_sha);
+    assert_eq!(body["actual_sha256"], expected_sha);
+
+    let _ = app;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn artifact_download_missing_file_is_404_and_verification_missing() {
+    let _guard = SERIAL.lock().await;
+    let db = test_db().await;
+    let (org, proj, repo) = seed_tenant(&db).await;
+    let root = tempfile::tempdir().expect("storage root");
+    let app = app_with_storage(
+        &db,
+        vec![key_for(TOKEN_A, org, "tester")],
+        false,
+        root.path(),
+    );
+    let auth = [bearer(TOKEN_A)];
+
+    let (run, artifact_id, _) = seed_run_with_artifact(
+        &db,
+        org,
+        proj,
+        repo,
+        root.path(),
+        "target/debug/vanished",
+        b"bytes that will be removed",
+        true,
+    )
+    .await;
+
+    // Remove the file from disk; the row remains as evidence.
+    let file = root
+        .path()
+        .join("runs")
+        .join(run.to_string())
+        .join("repo")
+        .join("target/debug/vanished");
+    std::fs::remove_file(&file).expect("remove artifact file");
+
+    // The download is a 404, never empty bytes.
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        &format!("/api/v1/runs/{run}/artifacts/{artifact_id}"),
+        &auth,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "NOT_FOUND");
+
+    // Verification reports the file as missing with no actual digest.
+    let (status, body) = send(
+        app,
+        "GET",
+        &format!("/api/v1/runs/{run}/artifacts/{artifact_id}/verification"),
+        &auth,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "missing");
+    assert_eq!(body["actual_sha256"], Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn artifact_verification_reports_corrupt_bytes() {
+    let _guard = SERIAL.lock().await;
+    let db = test_db().await;
+    let (org, proj, repo) = seed_tenant(&db).await;
+    let root = tempfile::tempdir().expect("storage root");
+    let app = app_with_storage(
+        &db,
+        vec![key_for(TOKEN_A, org, "tester")],
+        false,
+        root.path(),
+    );
+    let auth = [bearer(TOKEN_A)];
+
+    let (run, artifact_id, _) = seed_run_with_artifact(
+        &db,
+        org,
+        proj,
+        repo,
+        root.path(),
+        "target/debug/tampered",
+        b"original bytes",
+        true,
+    )
+    .await;
+
+    // Tamper with the on-disk bytes after the build recorded them.
+    let file = root
+        .path()
+        .join("runs")
+        .join(run.to_string())
+        .join("repo")
+        .join("target/debug/tampered");
+    std::fs::write(&file, b"tampered bytes").expect("tamper artifact file");
+
+    // Verification reports corrupt with both digests.
+    let (status, body) = send(
+        app,
+        "GET",
+        &format!("/api/v1/runs/{run}/artifacts/{artifact_id}/verification"),
+        &auth,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "corrupt");
+    assert_ne!(body["expected_sha256"], body["actual_sha256"]);
+    assert!(body["actual_sha256"].is_string());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn artifact_endpoints_fail_loudly_without_storage_root() {
+    let _guard = SERIAL.lock().await;
+    let db = test_db().await;
+    let (org, proj, repo) = seed_tenant(&db).await;
+    // No storage root configured: the artifact endpoints refuse loudly.
+    let app = app_with(&db, vec![key_for(TOKEN_A, org, "tester")], false);
+    let auth = [bearer(TOKEN_A)];
+
+    let (run, artifact_id, _) = seed_run_with_artifact(
+        &db,
+        org,
+        proj,
+        repo,
+        std::path::Path::new("/nonexistent-storage-root-for-test"),
+        "target/debug/never-served",
+        b"bytes",
+        false,
+    )
+    .await;
+
+    // The listing still works (it reads only the database).
+    let (status, _) = send(
+        app.clone(),
+        "GET",
+        &format!("/api/v1/runs/{run}/artifacts"),
+        &auth,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The byte-reading endpoints fail with a configuration error.
+    for uri in [
+        format!("/api/v1/runs/{run}/artifacts/{artifact_id}"),
+        format!("/api/v1/runs/{run}/artifacts/{artifact_id}/verification"),
+    ] {
+        let (status, body) = send(app.clone(), "GET", &uri, &auth, None).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{uri}");
+        assert_eq!(body["code"], "CONFIG_INVALID", "{uri}");
+    }
+
+    let _ = app;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn artifact_endpoints_are_tenant_scoped() {
+    let _guard = SERIAL.lock().await;
+    let db = test_db().await;
+    let (org_a, proj_a, repo_a) = seed_tenant(&db).await;
+    let (org_b, _proj_b, _repo_b) = seed_tenant(&db).await;
+    let root = tempfile::tempdir().expect("storage root");
+    let app = app_with_storage(
+        &db,
+        vec![
+            key_for(TOKEN_A, org_a, "tester-a"),
+            key_for(TOKEN_B, org_b, "tester-b"),
+        ],
+        false,
+        root.path(),
+    );
+    let auth_a = [bearer(TOKEN_A)];
+    let auth_b = [bearer(TOKEN_B)];
+
+    let (run, artifact_id, _) = seed_run_with_artifact(
+        &db,
+        org_a,
+        proj_a,
+        repo_a,
+        root.path(),
+        "target/debug/scoped",
+        b"tenant a bytes",
+        true,
+    )
+    .await;
+
+    // The owner can list and read.
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        &format!("/api/v1/runs/{run}/artifacts"),
+        &auth_a,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_array().expect("array").len(), 1);
+
+    // Another tenant sees nothing, exactly like every other scoped read.
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        &format!("/api/v1/runs/{run}/artifacts"),
+        &auth_b,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "NOT_FOUND");
+
+    let (status, body) = send(
+        app,
+        "GET",
+        &format!("/api/v1/runs/{run}/artifacts/{artifact_id}"),
+        &auth_b,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "NOT_FOUND");
+}

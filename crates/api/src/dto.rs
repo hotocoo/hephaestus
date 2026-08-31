@@ -10,6 +10,7 @@ use axum::http::request::Parts;
 use chrono::{DateTime, Utc};
 use hephaestus_core::domain::{Priority, RiskLevel};
 use hephaestus_db::catalog::{ProjectRow, RepositoryRow};
+use hephaestus_db::delivery::ArtifactRow;
 use hephaestus_db::deployment::DeploymentRow;
 use hephaestus_db::events::EventRecord;
 use hephaestus_db::planning::ApprovalRow;
@@ -197,6 +198,57 @@ impl From<DeploymentRow> for DeploymentResponse {
             created_at: row.created_at,
         }
     }
+}
+
+/// One registered build artifact (ADR-015).
+#[derive(Debug, Serialize)]
+pub struct ArtifactResponse {
+    /// Artifact id.
+    pub id: Uuid,
+    /// Owning task.
+    pub task_id: Uuid,
+    /// Driving workflow run.
+    pub run_id: Uuid,
+    /// Build that produced the file.
+    pub build_id: Uuid,
+    /// Workspace-relative file path.
+    pub path: String,
+    /// SHA-256 over the file content (hex).
+    pub sha256: String,
+    /// File size in bytes.
+    pub size_bytes: i64,
+    /// When the artifact row was recorded.
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<ArtifactRow> for ArtifactResponse {
+    fn from(row: ArtifactRow) -> Self {
+        Self {
+            id: row.id,
+            task_id: row.task_id,
+            run_id: row.run_id,
+            build_id: row.build_id,
+            path: row.path,
+            sha256: row.sha256,
+            size_bytes: row.size_bytes,
+            created_at: row.created_at,
+        }
+    }
+}
+
+/// The result of re-hashing one artifact's on-disk bytes against its
+/// recorded digest (ADR-015). Verification is a read-only statement
+/// about the disk, never a mutation.
+#[derive(Debug, Serialize)]
+pub struct ArtifactVerificationResponse {
+    /// Verified artifact id.
+    pub artifact_id: Uuid,
+    /// "verified", "missing" or "corrupt".
+    pub status: String,
+    /// Digest the build recorded.
+    pub expected_sha256: String,
+    /// Digest of the bytes currently on disk, when readable.
+    pub actual_sha256: Option<String>,
 }
 
 /// A workflow run as stored.

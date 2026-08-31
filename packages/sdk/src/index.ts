@@ -10,6 +10,8 @@ export {
 export type {
   ApprovalDecisionInput,
   ApprovalDecisionOutput,
+  Artifact,
+  ArtifactVerification,
   CreateTaskInput,
   Deployment,
   Event,

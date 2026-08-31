@@ -183,3 +183,36 @@ describe("run detail deployment panel", () => {
     void sampleRun;
   });
 });
+
+describe("run detail artifacts panel", () => {
+  it("renders registered artifacts and verifies them on demand", async () => {
+    const client = new FakeControlPlane();
+    // The fake pre-seeds one artifact for RUN_ID.
+    const wrapper = await mountRunDetail(client);
+    const text = wrapper.text();
+    expect(text).toContain("Artifacts");
+    expect(text).toContain("target/debug/forge-cli");
+    expect(text).toContain("1 KB");
+    expect(text).toContain("verify");
+    expect(text).toContain("download");
+
+    // Clicking verify calls the client and renders the result.
+    const verifyButtons = wrapper
+      .findAll("button")
+      .filter((b) => b.text().includes("verify"));
+    expect(verifyButtons.length).toBeGreaterThanOrEqual(1);
+    await verifyButtons[0]?.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("verified");
+    wrapper.unmount();
+  });
+
+  it("shows an empty state for a run that never built", async () => {
+    const client = new FakeControlPlane();
+    client.artifactsByRun.delete(RUN_ID);
+    const wrapper = await mountRunDetail(client);
+    expect(wrapper.text()).toContain("Artifacts");
+    expect(wrapper.text()).toContain("No artifacts registered yet");
+    wrapper.unmount();
+  });
+});

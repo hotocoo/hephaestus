@@ -4,11 +4,12 @@
  * gates, and the append-only event history. Reached directly (from a
  * receipt link) or from a task page.
  */
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useRoute } from "vue-router";
-import { PhCaretLeft } from "@phosphor-icons/vue";
-import type { Deployment, Gate } from "@hephaestus/sdk";
+import { PhCaretLeft, PhDownloadSimple, PhShieldCheck } from "@phosphor-icons/vue";
+import type { Artifact, ArtifactVerification, Deployment, Gate } from "@hephaestus/sdk";
 import { useControlPlane, notFoundToNull } from "@/api/client";
+import { formatBytes } from "@/lib/format";
 import { useAsyncResource } from "@/composables/useAsyncResource";
 import { usePolling } from "@/composables/usePolling";
 import { loadConfig } from "@/config";
@@ -51,6 +52,63 @@ const deployment = useAsyncResource(
   { watch: [run.data] },
 );
 
+/**
+ * Registered build artifacts (ADR-015). Runs that never built render
+ * an empty panel; the list is the honest evidence of what shipped.
+ */
+const artifacts = useAsyncResource(
+  (): Promise<Artifact[]> => client.listRunArtifacts(runId.value),
+  { watch: [run.data] },
+);
+
+/** Per-artifact verification results, keyed by artifact id. */
+const verifications = ref(new Map<string, ArtifactVerification>());
+const verifying = ref(new Set<string>());
+const downloading = ref(new Set<string>());
+
+async function verifyOne(artifactId: string): Promise<void> {
+  if (verifying.value.has(artifactId)) return;
+  verifying.value.add(artifactId);
+  try {
+    const result = await client.verifyArtifact(runId.value, artifactId);
+    const next = new Map(verifications.value);
+    next.set(artifactId, result);
+    verifications.value = next;
+  } catch {
+    // A failed verification is itself information; the row shows the
+    // button again so the operator can retry without losing the list.
+  } finally {
+    const next = new Set(verifying.value);
+    next.delete(artifactId);
+    verifying.value = next;
+  }
+}
+
+/**
+ * Download through the typed client and save via a blob URL; the
+ * bearer token never rides the URL (ADR-015).
+ */
+async function downloadOne(artifactId: string): Promise<void> {
+  if (downloading.value.has(artifactId)) return;
+  downloading.value.add(artifactId);
+  try {
+    const blob = await client.downloadArtifact(runId.value, artifactId);
+    const artifact = (artifacts.data.value ?? []).find((a) => a.id === artifactId);
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = artifact?.path.split("/").pop() ?? "artifact";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  } finally {
+    const next = new Set(downloading.value);
+    next.delete(artifactId);
+    downloading.value = next;
+  }
+}
+
 function reloadLive(): void {
   run.reload();
   events.reload();
@@ -73,6 +131,20 @@ const deploymentView = computed(() => {
     reason: current.failure_reason,
     created: formatDateTime(current.created_at),
   };
+});
+
+/** Render model for the artifacts panel; empty when nothing built. */
+const artifactRows = computed(() => {
+  const list = artifacts.data.value ?? [];
+  return list.map((artifact) => ({
+    id: artifact.id,
+    path: artifact.path,
+    size: formatBytes(artifact.size_bytes),
+    digest: artifact.sha256.slice(0, 12),
+    verification: verifications.value.get(artifact.id) ?? null,
+    isVerifying: verifying.value.has(artifact.id),
+    isDownloading: downloading.value.has(artifact.id),
+  }));
 });
 
 /** Render model so the template never casts server data. */
@@ -166,6 +238,52 @@ const view = computed(() => {
             >
               {{ deploymentView.reason }}
             </p>
+          </div>
+        </section>
+        <section class="panel" aria-label="artifacts">
+          <div class="panel__head"><h2>Artifacts</h2></div>
+          <div class="panel__body">
+            <ResourceState
+              :loading="artifacts.loading.value"
+              :error="artifacts.error.value"
+              :empty="artifactRows.length === 0"
+              empty-text="No artifacts registered yet"
+            />
+            <ul v-if="artifactRows.length > 0" class="artifact-list">
+              <li v-for="row in artifactRows" :key="row.id" class="artifact-row">
+                <div class="artifact-row__meta">
+                  <code class="mono artifact-row__path">{{ row.path }}</code>
+                  <span class="cell-sub">
+                    {{ row.size }} · sha256:{{ row.digest }}
+                  </span>
+                </div>
+                <div class="artifact-row__actions">
+                  <span
+                    v-if="row.verification !== null"
+                    class="artifact-status"
+                    :class="'artifact-status--' + row.verification.status"
+                  >
+                    {{ row.verification.status }}
+                  </span>
+                  <button
+                    class="btn btn--ghost"
+                    :disabled="row.isVerifying"
+                    @click="verifyOne(row.id)"
+                  >
+                    <PhShieldCheck :size="13" aria-hidden="true" />
+                    {{ row.isVerifying ? "checking" : "verify" }}
+                  </button>
+                  <button
+                    class="btn btn--ghost"
+                    :disabled="row.isDownloading"
+                    @click="downloadOne(row.id)"
+                  >
+                    <PhDownloadSimple :size="13" aria-hidden="true" />
+                    {{ row.isDownloading ? "saving" : "download" }}
+                  </button>
+                </div>
+              </li>
+            </ul>
           </div>
         </section>
       </div>

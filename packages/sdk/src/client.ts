@@ -18,6 +18,8 @@ export type CreateTaskInput = Schemas["CreateTaskRequest"];
 export type IntakeReceipt = Schemas["IntakeResponse"];
 export type Run = Schemas["RunResponse"];
 export type Deployment = Schemas["DeploymentResponse"];
+export type Artifact = Schemas["ArtifactResponse"];
+export type ArtifactVerification = Schemas["ArtifactVerificationResponse"];
 export type Event = Schemas["EventResponse"];
 export type Plan = Schemas["Plan"];
 export type Gate = Schemas["GateResponse"];
@@ -205,6 +207,48 @@ export class HephaestusClient {
   /** The run's latest deployment; rejects with ApiError(404) when none. */
   async getRunDeployment(runId: string): Promise<Deployment> {
     return this.request("GET", "/api/v1/runs/" + idSegment(runId) + "/deployment");
+  }
+
+  /** The artifacts a run's builds registered; empty when never built. */
+  async listRunArtifacts(runId: string): Promise<Artifact[]> {
+    return this.request("GET", "/api/v1/runs/" + idSegment(runId) + "/artifacts");
+  }
+
+  /**
+   * Re-hash one artifact on disk against its recorded digest
+   * (ADR-015). Returns verified / missing / corrupt.
+   */
+  async verifyArtifact(
+    runId: string,
+    artifactId: string,
+  ): Promise<ArtifactVerification> {
+    return this.request(
+      "GET",
+      "/api/v1/runs/" + idSegment(runId) + "/artifacts/" + idSegment(artifactId) + "/verification",
+    );
+  }
+
+  /**
+   * Download one artifact's bytes (ADR-015). The bearer token rides the
+   * Authorization header, never the URL. Rejects with ApiError on
+   * failure (404 when the row or its file is gone).
+   */
+  async downloadArtifact(runId: string, artifactId: string): Promise<Blob> {
+    const response = await this.transport(
+      this.baseUrl +
+        "/api/v1/runs/" +
+        idSegment(runId) +
+        "/artifacts/" +
+        idSegment(artifactId),
+      {
+        method: "GET",
+        headers: { authorization: "Bearer " + this.token },
+      },
+    );
+    if (!response.ok) {
+      throw ApiError.from(response.status, await response.text());
+    }
+    return await response.blob();
   }
 
   async listRunEvents(runId: string, query: PageQuery = {}): Promise<Event[]> {

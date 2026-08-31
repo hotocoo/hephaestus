@@ -13,6 +13,8 @@ import { ApiError } from "@hephaestus/sdk";
 import type {
   ApprovalDecisionInput,
   ApprovalDecisionOutput,
+  Artifact,
+  ArtifactVerification,
   CreateTaskInput,
   Deployment,
   Event,
@@ -77,6 +79,22 @@ export function sampleDeployment(overrides: Partial<Deployment> = {}): Deploymen
     target: "staging",
     status: "succeeded",
     failure_reason: null,
+    created_at: NOW,
+    ...overrides,
+  };
+}
+
+const SAMPLE_SHA = "9".repeat(64);
+
+export function sampleArtifact(overrides: Partial<Artifact> = {}): Artifact {
+  return {
+    id: "01900000-0000-7000-8000-00000000000e",
+    task_id: TASK_ID,
+    run_id: RUN_ID,
+    build_id: "01900000-0000-7000-8000-00000000000d",
+    path: "target/debug/forge-cli",
+    sha256: SAMPLE_SHA,
+    size_bytes: 1024,
     created_at: NOW,
     ...overrides,
   };
@@ -166,6 +184,9 @@ export class FakeControlPlane implements ControlPlane {
     ],
   ]);
   deploymentsByRun = new Map<string, Deployment>([[RUN_ID, sampleDeployment()]]);
+  artifactsByRun = new Map<string, Artifact[]>([
+    [RUN_ID, [sampleArtifact()]],
+  ]);
 
   async getHealthz(): Promise<{ status: string }> {
     return { status: "ok" };
@@ -217,6 +238,32 @@ export class FakeControlPlane implements ControlPlane {
 
   async listRunEvents(runId: string): Promise<Event[]> {
     return this.eventsByRun.get(runId) ?? [];
+  }
+
+  async listRunArtifacts(runId: string): Promise<Artifact[]> {
+    return this.artifactsByRun.get(runId) ?? [];
+  }
+
+  async verifyArtifact(
+    runId: string,
+    artifactId: string,
+  ): Promise<ArtifactVerification> {
+    const artifacts = this.artifactsByRun.get(runId) ?? [];
+    const artifact = artifacts.find((a) => a.id === artifactId);
+    if (artifact === undefined) throw notFound();
+    return {
+      artifact_id: artifact.id,
+      status: "verified",
+      expected_sha256: artifact.sha256,
+      actual_sha256: artifact.sha256,
+    };
+  }
+
+  async downloadArtifact(runId: string, artifactId: string): Promise<Blob> {
+    const artifacts = this.artifactsByRun.get(runId) ?? [];
+    const artifact = artifacts.find((a) => a.id === artifactId);
+    if (artifact === undefined) throw notFound();
+    return new Blob(["fake-artifact-bytes"], { type: "application/octet-stream" });
   }
 
 

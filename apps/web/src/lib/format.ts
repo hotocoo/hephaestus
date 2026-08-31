@@ -65,6 +65,24 @@ export function shortId(id: string): string {
 }
 
 /**
+ * Byte count rendered in the smallest whole unit that fits, so the
+ * artifact panel's sizes stay readable from a few KB to a few GB.
+ * Negative or non-finite input renders as "0 B" rather than garbage.
+ */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  const rounded = index === 0 ? String(value) : value.toFixed(1).replace(/\.0$/, "");
+  return rounded + " " + units[index];
+}
+
+/**
  * Event payload rendered as bounded text. Payloads are versioned JSON
  * of untrusted provenance; they are stringified, truncated hard and
  * displayed verbatim - never parsed into instructions, never marked up.
